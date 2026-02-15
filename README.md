@@ -25,7 +25,7 @@ Add OpenTelemetry middleware dependency with go modules
 go get github.com/labstack/echo-opentelemetry
 ```
 
-Use as import statement
+Use as an import statement
 
 ```go
 import "github.com/labstack/echo-opentelemetry"
@@ -46,7 +46,11 @@ e.Use(echootel.NewMiddlewareWithConfig(echootel.Config{
 }))
 ```
 
+Retrieving the tracer from the Echo context
+```go
+tp, err := echo.ContextGet[trace.Tracer](c, echootel.TracerKey)
+```
 
 ## Full example
 
-TODO
+See [example](example/main.go)
