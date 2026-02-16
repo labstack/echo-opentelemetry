@@ -13,7 +13,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/semconv/v1.39.0/httpconv"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
@@ -369,6 +371,79 @@ func TestWithEchoMetricAttributeFn(t *testing.T) {
 	}
 	assert.True(t, foundID, "echo param id attribute should be found")
 	assert.True(t, foundPath, "echo path attribute should be found")
+}
+
+type customMetrics struct {
+	requestDurationHistogram httpconv.ServerRequestDuration
+}
+
+func newCustomMetrics(meter metric.Meter) *customMetrics {
+	reqDuration, _ := httpconv.NewServerRequestDuration(
+		meter,
+		metric.WithExplicitBucketBoundaries(0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10),
+	)
+	return &customMetrics{
+		requestDurationHistogram: reqDuration,
+	}
+}
+
+func (m *customMetrics) Record(c *echo.Context, v RecordValues) {
+	o := metric.WithAttributeSet(attribute.NewSet(v.ExtractedValues.MetricAttributes()...))
+	m.requestDurationHistogram.Inst().Record(c.Request().Context(), v.RequestDuration.Seconds(), o)
+}
+
+func TestNewMiddlewareWithConfig_Metric(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	config := Config{
+		ServerName: "foobar",
+		Metrics:    newCustomMetrics(meterProvider.Meter(ScopeName, metric.WithInstrumentationVersion(Version))),
+	}
+
+	e := echo.New()
+	e.Use(NewMiddlewareWithConfig(config))
+	e.GET("/user/:id", func(c *echo.Context) error {
+		id := c.Param("id")
+		assert.Equal(t, "123", id)
+		return c.String(http.StatusOK, id)
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/user/123", http.NoBody)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, r)
+
+	// verify metrics
+	rm := metricdata.ResourceMetrics{}
+	assert.NoError(t, reader.Collect(t.Context(), &rm))
+
+	assert.Len(t, rm.ScopeMetrics, 1)
+	sm := rm.ScopeMetrics[0]
+	assert.Len(t, sm.Metrics, 1)
+	assert.Equal(t, ScopeName, sm.Scope.Name)
+	assert.Equal(t, Version, sm.Scope.Version)
+
+	metricdatatest.AssertEqual(t, metricdata.Metrics{
+		Name:        "http.server.request.duration",
+		Description: "Duration of HTTP server requests.",
+		Unit:        "s",
+		Data: metricdata.Histogram[float64]{
+			Temporality: metricdata.CumulativeTemporality,
+			DataPoints: []metricdata.HistogramDataPoint[float64]{
+				{
+					Attributes: attribute.NewSet([]attribute.KeyValue{
+						attribute.String("http.request.method", "GET"),
+						attribute.Int64("http.response.status_code", 200),
+						attribute.String("network.protocol.name", "http"),
+						attribute.String("network.protocol.version", "1.1"),
+						attribute.String("server.address", "foobar"),
+						attribute.String("url.scheme", "http"),
+						attribute.String("http.route", "/user/:id"),
+					}...),
+				},
+			},
+		},
+	}, sm.Metrics[0], metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreValue(), metricdatatest.IgnoreExemplars())
 }
 
 func TestWithOnError(t *testing.T) {
