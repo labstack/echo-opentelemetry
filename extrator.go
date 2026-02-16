@@ -64,28 +64,30 @@ func NewMetrics(meter metric.Meter) (*Metrics, error) {
 	}, nil
 }
 
-// IncrementValues represents the values to be used for Increment method.
-type IncrementValues struct {
+// RecordValues represents the values to Record metrics.
+type RecordValues struct {
 	// RequestDuration is the duration of request processing. Will be used with `http.server.request.duration` metric.
 	RequestDuration time.Duration
 
-	// RequestSize is the size of the request body in bytes. Will be used with `http.server.request.body.size` metric.
-	RequestSize int64
+	// ExtractedValues are values extracted from HTTP request and response before and after processing the next middleware/handler.
+	ExtractedValues Values
 
-	// ResponseSize is the size of the response body in bytes. Will be used with `http.server.response.body.size` metric.
-	ResponseSize int64
-
-	// Attributes are additional attributes to be used for incremented metrics.
+	// Attributes are attributes to be used for recording metrics.
+	// If left empty, the Metrics.Record method will use default attributes by calling Values.MetricAttributes().
 	Attributes []attribute.KeyValue
 }
 
-// Increment records the given IncrementValues to the Metrics instance.
-func (m *Metrics) Increment(ctx context.Context, v IncrementValues) {
-	o := metric.WithAttributeSet(attribute.NewSet(v.Attributes...))
+// Record records the given RecordValues to the Metrics instance.
+func (m *Metrics) Record(ctx context.Context, v RecordValues) {
+	attrs := v.Attributes
+	if len(attrs) == 0 {
+		attrs = v.ExtractedValues.MetricAttributes()
+	}
+	o := metric.WithAttributeSet(attribute.NewSet(attrs...))
 
 	m.requestDurationHistogram.Inst().Record(ctx, v.RequestDuration.Seconds(), o)
-	m.requestBodySizeHistogram.Inst().Record(ctx, v.RequestSize, o)
-	m.responseBodySizeHistogram.Inst().Record(ctx, v.ResponseSize, o)
+	m.requestBodySizeHistogram.Inst().Record(ctx, v.ExtractedValues.HTTPRequestBodySize, o)
+	m.responseBodySizeHistogram.Inst().Record(ctx, v.ExtractedValues.HTTPResponseBodySize, o)
 }
 
 // Values represent extracted values from HTTP request and response to be used for Span and Metrics attributes.

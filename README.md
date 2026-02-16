@@ -28,7 +28,7 @@ go get github.com/labstack/echo-opentelemetry
 Use as an import statement
 
 ```go
-import "github.com/labstack/echo-opentelemetry"
+import echootel "github.com/labstack/echo-opentelemetry"
 ```
 
 Add middleware in simplified form, by providing only the server name
@@ -41,7 +41,6 @@ Add middleware with configuration options
 
 ```go
 e.Use(echootel.NewMiddlewareWithConfig(echootel.Config{
-  ServerName:     "my-server",
   TracerProvider: tp,
 }))
 ```

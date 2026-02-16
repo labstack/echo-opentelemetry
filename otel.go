@@ -22,7 +22,7 @@ const (
 	// TracerKey is the key used to store the tracer in the echo context.
 	TracerKey = "labstack-echo-otelecho-tracer"
 	// ScopeName is the instrumentation scope name.
-	ScopeName = "github.com/labstack/echo-contrib/echootel"
+	ScopeName = "github.com/labstack/echo-opentelemetry"
 )
 
 // Config is used to configure the middleware.
@@ -52,9 +52,14 @@ type Config struct {
 	// OnErrorFn is used to specify how errors are handled in the middleware.
 	OnError OnErrorFunc
 
+	// TracerProvider allows overriding the default tracer provider.
 	TracerProvider oteltrace.TracerProvider
-	MeterProvider  metric.MeterProvider
-	Propagators    propagation.TextMapPropagator
+
+	// MeterProvider allows overriding the default meter provider.
+	MeterProvider metric.MeterProvider
+
+	// Propagators allow overriding the default propagators.
+	Propagators propagation.TextMapPropagator
 
 	// SpanStartOptions configures an additional set of trace.SpanStartOptions, which are applied to each new span.
 	SpanStartOptions []oteltrace.SpanStartOption
@@ -67,14 +72,24 @@ type Config struct {
 	// and return them as a slice of attribute.KeyValue.
 	SpanEndAttributes AttributesFunc
 
-	// MetricAttributes is used to extract additional attributes from the echo.Context
-	// and return them as a slice of attribute.KeyValue.
-	MetricAttributes AttributesFunc
+	// MetricAttributes is used to compose attributes just before Metrics.Record call.
+	MetricAttributes MetricAttributesFunc
+
+	// Metrics is used to record custom metrics instead of default.
+	Metrics MetricsRecorder
 }
 
 // AttributesFunc is used to extract additional attributes from the echo.Context
 // and return them as a slice of attribute.KeyValue.
 type AttributesFunc func(c *echo.Context, v *Values, attr []attribute.KeyValue) []attribute.KeyValue
+
+// MetricAttributesFunc is used to compose attributes for Metrics.Record.
+type MetricAttributesFunc func(c *echo.Context, v *Values) []attribute.KeyValue
+
+// MetricsRecorder is used to record metrics.
+type MetricsRecorder interface {
+	Record(c *echo.Context, v RecordValues)
+}
 
 // OnErrorFunc is used to specify how errors are handled in the middleware.
 type OnErrorFunc func(c *echo.Context, err error)
@@ -101,9 +116,6 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 	if config.Propagators == nil {
 		config.Propagators = otel.GetTextMapPropagator()
 	}
-	if config.MeterProvider == nil {
-		config.MeterProvider = otel.GetMeterProvider()
-	}
 	if config.Skipper == nil {
 		config.Skipper = middleware.DefaultSkipper
 	}
@@ -129,14 +141,21 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 		oteltrace.WithInstrumentationVersion(Version),
 	)
 
-	meter := config.MeterProvider.Meter(
-		ScopeName,
-		metric.WithInstrumentationVersion(Version),
-	)
+	metrics := config.Metrics
+	if config.Metrics == nil {
+		if config.MeterProvider == nil {
+			config.MeterProvider = otel.GetMeterProvider()
+		}
+		meter := config.MeterProvider.Meter(
+			ScopeName,
+			metric.WithInstrumentationVersion(Version),
+		)
 
-	metrics, mErr := NewMetrics(meter)
-	if mErr != nil {
-		return nil, fmt.Errorf("otel middleware failed to create metrics: %w", mErr)
+		tmp, mErr := NewMetrics(meter)
+		if mErr != nil {
+			return nil, fmt.Errorf("otel middleware failed to create metrics: %w", mErr)
+		}
+		metrics = &echoMetricsRecorder{Metrics: tmp}
 	}
 
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
@@ -214,18 +233,25 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 			span.SetAttributes(endAttributes...)
 
 			// Record the server-side attributes.
-			iv := IncrementValues{
+			iv := RecordValues{
 				RequestDuration: time.Since(requestStartTime),
-				RequestSize:     ev.HTTPRequestBodySize,
-				ResponseSize:    ev.HTTPResponseBodySize,
-				Attributes:      ev.MetricAttributes(),
+				ExtractedValues: ev,
+				Attributes:      nil,
 			}
 			if config.MetricAttributes != nil {
-				iv.Attributes = config.MetricAttributes(c, &ev, iv.Attributes)
+				iv.Attributes = config.MetricAttributes(c, &ev)
 			}
-			metrics.Increment(c.Request().Context(), iv)
+			metrics.Record(c, iv)
 
 			return err
 		}
 	}, nil
+}
+
+type echoMetricsRecorder struct {
+	*Metrics
+}
+
+func (e *echoMetricsRecorder) Record(c *echo.Context, v RecordValues) {
+	e.Metrics.Record(c.Request().Context(), v)
 }
