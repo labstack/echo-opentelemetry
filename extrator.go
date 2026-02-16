@@ -250,6 +250,18 @@ type Values struct {
 	//  * metric - Conditionally Required If and only if it's available
 	HTTPRoute string // metric, span
 
+	// HTTPRequestBodySize (`http.request.body.size`) is the size of the request payload body in bytes. This is the number
+	// of bytes transferred excluding headers and is often, but not always, present as the [Content-Length](https://www.rfc-editor.org/rfc/rfc9110.html#field.content-length)
+	// header. For requests using transport encoding, this should be the compressed size.
+	// Spec: https://opentelemetry.io/docs/specs/semconv/http/http-metrics/#metric-httpclientrequestbodysize
+	//
+	// Go: This value is taken from `Request.ContentLength` can be negative (-1) if the size is unknown.
+	//
+	// Requirement Level:
+	//  * span - opt-in attribute
+	//  * metric - optional, is actual Histogram metric (`http.client.request.body.size`) and NOT attribute to metric.
+	HTTPRequestBodySize int64 // metric
+
 	// HTTPResponseStatusCode (`http.response.status_code`) is HTTP response status code.
 	// See also RFC: https://datatracker.ietf.org/doc/html/rfc7231#section-6
 	// Spec: https://opentelemetry.io/docs/specs/semconv/registry/attributes/http/
@@ -269,18 +281,6 @@ type Values struct {
 	//  * span - opt-in attribute
 	//  * metric - optional, is actual Histogram metric (`http.server.response.body.size`) and NOT attribute to metric.
 	HTTPResponseBodySize int64 // metric
-
-	// HTTPRequestBodySize (`http.request.body.size`) is the size of the request payload body in bytes. This is the number
-	// of bytes transferred excluding headers and is often, but not always, present as the [Content-Length](https://www.rfc-editor.org/rfc/rfc9110.html#field.content-length)
-	// header. For requests using transport encoding, this should be the compressed size.
-	// Spec: https://opentelemetry.io/docs/specs/semconv/http/http-metrics/#metric-httpclientrequestbodysize
-	//
-	// Go: This value is taken from `Request.ContentLength` can be negative (-1) if the size is unknown.
-	//
-	// Requirement Level:
-	//  * span - opt-in attribute
-	//  * metric - optional, is actual Histogram metric (`http.client.request.body.size`) and NOT attribute to metric.
-	HTTPRequestBodySize int64 // metric
 }
 
 // ExtractRequest extracts values from the given HTTP request and populates the Values struct.

@@ -1,6 +1,7 @@
 package echootel
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
@@ -38,9 +39,42 @@ func TestValues_ExtractRequest(t *testing.T) {
 				NetworkProtocolName:    "http",
 				NetworkProtocolVersion: "1.1",
 				HTTPRoute:              "",
+				HTTPRequestBodySize:    0,
 				HTTPResponseStatusCode: 0,
 				HTTPResponseBodySize:   0,
-				HTTPRequestBodySize:    0,
+			},
+		},
+		{
+			name: "GET request, user agent, pattern",
+			whenRequest: func() *http.Request {
+				r := defaultRequest.Clone(context.Background())
+				r.Method = "gEt"
+				r.Host = "example.com:8433"
+				r.ContentLength = -1
+
+				r.RemoteAddr = "127.0.0.1:8080"
+				r.Pattern = "/path"
+				r.Header.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36")
+				return r
+			}(),
+			expect: Values{
+				HTTPMethod:             "GET",
+				HTTPMethodOriginal:     "gEt",
+				ServerAddress:          "example.com",
+				ServerPort:             8433,
+				NetworkPeerAddress:     "127.0.0.1",
+				NetworkPeerPort:        8080,
+				ClientAddress:          "127.0.0.1",
+				URLScheme:              "http",
+				URLPath:                "/path",
+				UserAgentOriginal:      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36",
+				NetworkProtocolName:    "http",
+				NetworkProtocolVersion: "1.1",
+				HTTPRoute:              "/path",
+				HTTPRequestBodySize:    -1,
+				// these are filled later
+				HTTPResponseStatusCode: 0,
+				HTTPResponseBodySize:   0,
 			},
 		},
 	}
@@ -58,6 +92,93 @@ func TestValues_ExtractRequest(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestValues_SpanStartAttributes(t *testing.T) {
+	var testCases = []struct {
+		name             string
+		given            Values
+		expectAttributes []attribute.KeyValue
+	}{
+		{
+			name: "common + NetworkPeerAddress",
+			given: Values{
+				ServerAddress:      "test.com",
+				URLScheme:          "http",
+				NetworkPeerAddress: "127.0.0.1",
+			},
+			expectAttributes: []attribute.KeyValue{
+				attribute.String("http.request.method", "_OTHER"),
+				attribute.String("server.address", "test.com"),
+				attribute.String("url.scheme", "http"),
+				attribute.String("network.peer.address", "127.0.0.1"),
+			},
+		},
+		{
+			name: "common + NetworkPeerPort",
+			given: Values{
+				ServerAddress:   "test.com",
+				URLScheme:       "http",
+				NetworkPeerPort: 8080,
+			},
+			expectAttributes: []attribute.KeyValue{
+				attribute.String("http.request.method", "_OTHER"),
+				attribute.String("server.address", "test.com"),
+				attribute.String("url.scheme", "http"),
+				attribute.Int("network.peer.port", 8080),
+			},
+		},
+		{
+			name: "common + ClientAddress",
+			given: Values{
+				ServerAddress: "test.com",
+				URLScheme:     "http",
+				ClientAddress: "127.0.0.1",
+			},
+			expectAttributes: []attribute.KeyValue{
+				attribute.String("http.request.method", "_OTHER"),
+				attribute.String("server.address", "test.com"),
+				attribute.String("url.scheme", "http"),
+				attribute.String("client.address", "127.0.0.1"),
+			},
+		},
+		{
+			name: "common + UserAgentOriginal",
+			given: Values{
+				ServerAddress:     "test.com",
+				URLScheme:         "http",
+				UserAgentOriginal: "Firefox/91.0.2",
+			},
+			expectAttributes: []attribute.KeyValue{
+				attribute.String("http.request.method", "_OTHER"),
+				attribute.String("server.address", "test.com"),
+				attribute.String("url.scheme", "http"),
+				attribute.String("user_agent.original", "Firefox/91.0.2"),
+			},
+		},
+		{
+			name: "common + URLPath",
+			given: Values{
+				ServerAddress: "test.com",
+				URLScheme:     "http",
+				URLPath:       "/test/path",
+			},
+			expectAttributes: []attribute.KeyValue{
+				attribute.String("http.request.method", "_OTHER"),
+				attribute.String("server.address", "test.com"),
+				attribute.String("url.scheme", "http"),
+				attribute.String("url.path", "/test/path"),
+			},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			attr := tc.given.SpanStartAttributes()
+
+			assert.Len(t, attr, len(tc.expectAttributes))
+			assert.ElementsMatch(t, tc.expectAttributes, attr)
 		})
 	}
 }
@@ -475,6 +596,90 @@ func TestSpanNameFormatter(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			spanName := SpanNameFormatter(tc.when)
 			assert.Equal(t, tc.expect, spanName)
+		})
+	}
+}
+
+func TestSplitProto(t *testing.T) {
+	var testCases = []struct {
+		name          string
+		whenProto     string
+		expectName    string
+		expectVersion string
+	}{
+		{
+			name:          "empty",
+			whenProto:     "",
+			expectName:    "",
+			expectVersion: "",
+		},
+		{
+			name:          "http uppercase",
+			whenProto:     "HTTP/1.1",
+			expectName:    "http",
+			expectVersion: "1.1",
+		},
+		{
+			name:          "quic uppercase",
+			whenProto:     "QUIC/2",
+			expectName:    "quic",
+			expectVersion: "2",
+		},
+		{
+			name:          "spdy uppercase",
+			whenProto:     "SPDY/3.1",
+			expectName:    "spdy",
+			expectVersion: "3.1",
+		},
+		{
+			name:          "already lowercase",
+			whenProto:     "http/2",
+			expectName:    "http",
+			expectVersion: "2",
+		},
+		{
+			name:          "mixed case default branch",
+			whenProto:     "HtTp/1.0",
+			expectName:    "http",
+			expectVersion: "1.0",
+		},
+		{
+			name:          "unknown protocol",
+			whenProto:     "FTP/1.0",
+			expectName:    "ftp",
+			expectVersion: "1.0",
+		},
+		{
+			name:          "no version segment",
+			whenProto:     "HTTP",
+			expectName:    "http",
+			expectVersion: "",
+		},
+		{
+			name:          "no slash unknown protocol",
+			whenProto:     "CustomProto",
+			expectName:    "customproto",
+			expectVersion: "",
+		},
+		{
+			name:          "extra slash only splits first",
+			whenProto:     "HTTP/1.1/extra",
+			expectName:    "http",
+			expectVersion: "1.1/extra",
+		},
+		{
+			name:          "leading slash",
+			whenProto:     "/1.0",
+			expectName:    "",
+			expectVersion: "1.0",
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			name, version := splitProto(tc.whenProto)
+
+			assert.Equal(t, tc.expectName, name)
+			assert.Equal(t, tc.expectVersion, version)
 		})
 	}
 }
