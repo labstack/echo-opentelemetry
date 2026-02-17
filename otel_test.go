@@ -446,21 +446,21 @@ func TestNewMiddlewareWithConfig_Metric(t *testing.T) {
 	}, sm.Metrics[0], metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreValue(), metricdatatest.IgnoreExemplars())
 }
 
-func TestWithOnError(t *testing.T) {
+func TestConfig_OnNextError(t *testing.T) {
 	tests := []struct {
 		name              string
-		GivenOnErrorFunc  OnErrorFunc
+		givenOnNextError  OnErrorFunc
 		wantHandlerCalled int
 	}{
 		{
-			name:              "without WithOnError option (default)",
-			GivenOnErrorFunc:  nil,
+			name:              "without OnNextError option (default)",
+			givenOnNextError:  nil,
 			wantHandlerCalled: 1,
 		},
 		{
-			name: "custom onError logging only",
-			GivenOnErrorFunc: func(_ *echo.Context, err error) {
-				t.Logf("Inside custom OnError: %v", err)
+			name: "custom OnNextError logging only",
+			givenOnNextError: func(_ *echo.Context, err error) {
+				t.Logf("Inside custom OnNextError: %v", err)
 			},
 			wantHandlerCalled: 1,
 		},
@@ -472,7 +472,7 @@ func TestWithOnError(t *testing.T) {
 			w := httptest.NewRecorder()
 
 			router := echo.New()
-			router.Use(NewMiddlewareWithConfig(Config{ServerName: "foobar", OnError: tt.GivenOnErrorFunc}))
+			router.Use(NewMiddlewareWithConfig(Config{ServerName: "foobar", OnNextError: tt.givenOnNextError}))
 
 			router.GET("/ping", func(_ *echo.Context) error {
 				return assert.AnError

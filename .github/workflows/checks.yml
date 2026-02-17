@@ -41,9 +41,7 @@ jobs:
 
       - name: Run gosec
         run: |
-# 2026-02-16: gosec is broken for multi-module repos, so we use v2.23.0 instead of the latest version.
-#          go install github.com/securego/gosec/v2/cmd/gosec@latest
-          go install github.com/securego/gosec/v2/cmd/gosec@v2.23.0
+          go install github.com/securego/gosec/v2/cmd/gosec@master
           gosec -exclude-dir=.cache ./...
 
       - name: Run govulncheck

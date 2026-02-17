@@ -49,8 +49,11 @@ type Config struct {
 	// Skipper defines a function to skip middleware.
 	Skipper middleware.Skipper
 
-	// OnErrorFn is used to specify how errors are handled in the middleware.
-	OnError OnErrorFunc
+	// OnNextError is used to specify how errors returned from the next middleware / handler are handled.
+	OnNextError OnErrorFunc
+
+	// OnExtractionError is used to specify how errors returned from request extraction are handled.
+	OnExtractionError OnErrorFunc
 
 	// TracerProvider allows overriding the default tracer provider.
 	TracerProvider oteltrace.TracerProvider
@@ -119,11 +122,6 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 	if config.Skipper == nil {
 		config.Skipper = middleware.DefaultSkipper
 	}
-	if config.OnError == nil {
-		config.OnError = func(c *echo.Context, err error) {
-			c.Logger().Error("otel middleware error", "error", err)
-		}
-	}
 
 	var serverHost string
 	var serverPort int
@@ -175,7 +173,9 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 				ClientAddress: c.RealIP(),
 			}
 			if err := ev.ExtractRequest(request); err != nil {
-				config.OnError(c, err)
+				if config.OnExtractionError != nil {
+					config.OnExtractionError(c, err)
+				}
 			}
 			spanAttributes := ev.SpanStartAttributes()
 			if config.SpanStartAttributes != nil {
@@ -217,7 +217,9 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 			if err != nil {
 				span.SetAttributes(semconv.ErrorType(err))
 				span.SetStatus(codes.Error, err.Error())
-				config.OnError(c, err)
+				if config.OnNextError != nil {
+					config.OnNextError(c, err)
+				}
 			}
 
 			resp, status := echo.ResolveResponseStatus(c.Response(), err)
