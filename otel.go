@@ -89,7 +89,8 @@ type AttributesFunc func(c *echo.Context, v *Values, attr []attribute.KeyValue) 
 // MetricAttributesFunc is used to compose attributes for Metrics.Record.
 type MetricAttributesFunc func(c *echo.Context, v *Values) []attribute.KeyValue
 
-// MetricsRecorder is used to record metrics.
+// MetricsRecorder is used to record metrics. This interface is used to allow custom metrics recording with access to
+// the Echo context, so additional attributes can be extracted from it.
 type MetricsRecorder interface {
 	Record(c *echo.Context, v RecordValues)
 }
@@ -239,6 +240,7 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 				RequestDuration: time.Since(requestStartTime),
 				ExtractedValues: ev,
 				Attributes:      nil,
+				// when Attributes are left nil, they are extracted with `iv.ExtractedValues.MetricAttributes()` inside `metrics.Record()` call
 			}
 			if config.MetricAttributes != nil {
 				iv.Attributes = config.MetricAttributes(c, &ev)
@@ -250,6 +252,7 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 	}, nil
 }
 
+// echoMetricsRecorder is the default implementation for Echo metric recording interface
 type echoMetricsRecorder struct {
 	*Metrics
 }

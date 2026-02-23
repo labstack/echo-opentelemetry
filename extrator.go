@@ -12,9 +12,35 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+)
+
+import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
 	"go.opentelemetry.io/otel/semconv/v1.39.0/httpconv"
 )
+
+/*
+ Working principles for tracing/metering HTTP requests/responses with extractor.
+
+ 1. Create a Values struct per request served to hold extracted values from Request and Response `v := Values{}`.
+   1.1. If your middleware needs to support default/custom values (server name/port, client addr etc) this is good place
+				to set them.
+ 2. Extract request values from the HTTP request to Values struct `err := v.ExtractRequest(request)`. These extracted values
+		are used to start then span and when metrics are recorded at the end of the request (response side)
+ 3. Create the new span.
+   3.1. Attributes for span can be acquired from extracted values with `attr := v.SpanStartAttributes()`
+   3.2. If your middleware needs to support additional start attributes, add them to attributes from previous step.
+ 4. Execute next handler in chain.
+ 5. Determine if the request / response ended with an error
+ 6. Extract response values from HTTP response to Values struct
+	  6.1. Determine the response status that was sent to the client `v.HTTPResponseStatusCode = ?`
+		6.2. Extract response body size `v.HTTPResponseBodySize = ?`
+ 7. Attributes from response can be acquired from extracted values with `attr := v.SpanEndAttributes()`
+   7.1. If your middleware needs to support additional end attributes, add them to attributes.
+ 8. Create a RecordValues struct for metrics recording `iv := RecordValues{...}`.
+ 9. Record metrics with `m.Record(ctx, iv)`
+ 10. End the span with `span.End(ctx)`
+*/
 
 // Metrics holds a standard set of OpenTelemetry global request/response metrics
 type Metrics struct {

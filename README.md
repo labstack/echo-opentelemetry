@@ -1,7 +1,6 @@
 [![Sourcegraph](https://sourcegraph.com/github.com/labstack/echo-opentelemetry/-/badge.svg?style=flat-square)](https://sourcegraph.com/github.com/labstack/echo-opentelemetry?badge)
 [![GoDoc](http://img.shields.io/badge/go-documentation-blue.svg?style=flat-square)](https://pkg.go.dev/github.com/labstack/echo-opentelemetry)
 [![Go Report Card](https://goreportcard.com/badge/github.com/labstack/echo-opentelemetry?style=flat-square)](https://goreportcard.com/report/github.com/labstack/echo-opentelemetry)
-[![Codecov](https://img.shields.io/codecov/c/github/labstack/echo-opentelemetry.svg?style=flat-square)](https://codecov.io/gh/labstack/echo-opentelemetry)
 [![License](http://img.shields.io/badge/license-mit-blue.svg?style=flat-square)](https://raw.githubusercontent.com/labstack/echo-opentelemetry/main/LICENSE)
 
 # Echo OpenTelemetry (OTel) middleware
