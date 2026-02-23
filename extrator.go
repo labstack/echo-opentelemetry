@@ -365,72 +365,89 @@ func (v *Values) ExtractRequest(r *http.Request) error {
 
 // SpanStartAttributes returns a list of attributes to be used when starting a span.
 func (v *Values) SpanStartAttributes() []attribute.KeyValue {
-	result := v.commonAttributes(5)
+	return v.AppendStartAttributes(make([]attribute.KeyValue, 0, 8+5))
+}
+
+// AppendStartAttributes appends attributes to be used when starting a span.
+// Use this method instead of `SpanStartAttributes()` when you want to preallocate/reuse attributes slice.
+func (v *Values) AppendStartAttributes(attrs []attribute.KeyValue) []attribute.KeyValue {
+	attrs = v.appendCommonAttributes(attrs)
 	if v.NetworkPeerAddress != "" {
-		result = append(result, semconv.NetworkPeerAddress(v.NetworkPeerAddress))
+		attrs = append(attrs, semconv.NetworkPeerAddress(v.NetworkPeerAddress))
 	}
 	if v.NetworkPeerPort != 0 {
-		result = append(result, semconv.NetworkPeerPort(v.NetworkPeerPort))
+		attrs = append(attrs, semconv.NetworkPeerPort(v.NetworkPeerPort))
 	}
 	if v.ClientAddress != "" {
-		result = append(result, semconv.ClientAddress(v.ClientAddress))
+		attrs = append(attrs, semconv.ClientAddress(v.ClientAddress))
 	}
 	if v.UserAgentOriginal != "" {
-		result = append(result, semconv.UserAgentOriginal(v.UserAgentOriginal))
+		attrs = append(attrs, semconv.UserAgentOriginal(v.UserAgentOriginal))
 	}
 	if v.URLPath != "" {
-		result = append(result, semconv.URLPath(v.URLPath))
+		attrs = append(attrs, semconv.URLPath(v.URLPath))
 	}
-	return result
+	return attrs
 }
 
 // SpanEndAttributes returns a list of attributes to be used when ending a span, after the next handler has been executed.
 func (v *Values) SpanEndAttributes() []attribute.KeyValue {
-	return []attribute.KeyValue{
+	return v.AppendSpanEndAttributes(make([]attribute.KeyValue, 0, 3))
+}
+
+// AppendSpanEndAttributes appends attributes to be used when ending a span, after the next handler has been executed.
+// Use this method instead of `SpanEndAttributes()` when you want to preallocate/reuse attributes slice.
+func (v *Values) AppendSpanEndAttributes(attrs []attribute.KeyValue) []attribute.KeyValue {
+	return append(attrs,
 		semconv.HTTPResponseStatusCode(v.HTTPResponseStatusCode),
 		semconv.HTTPRequestBodySize(int(v.HTTPRequestBodySize)),
 		semconv.HTTPResponseBodySize(int(v.HTTPResponseBodySize)),
-	}
+	)
 }
 
 // MetricAttributes creates attributes for metric instruments from extracted values.
 // See also: https://opentelemetry.io/docs/specs/semconv/http/http-metrics/
 func (v *Values) MetricAttributes() []attribute.KeyValue {
-	result := v.commonAttributes(1)
-	if v.HTTPResponseStatusCode != 0 {
-		result = append(result, semconv.HTTPResponseStatusCode(v.HTTPResponseStatusCode))
-	}
-	return result
+	return v.AppendMetricAttributes(make([]attribute.KeyValue, 0, 8+1))
 }
 
-func (v *Values) commonAttributes(additionalSize int) []attribute.KeyValue {
-	result := make([]attribute.KeyValue, 0, 8+additionalSize)
+// AppendMetricAttributes appends attributes for metric instruments from extracted values.
+// Use this method instead of `MetricAttributes()` when you want to preallocate/reuse attributes slice.
+// See also: https://opentelemetry.io/docs/specs/semconv/http/http-metrics/
+func (v *Values) AppendMetricAttributes(attrs []attribute.KeyValue) []attribute.KeyValue {
+	attrs = v.appendCommonAttributes(attrs)
+	if v.HTTPResponseStatusCode != 0 {
+		attrs = append(attrs, semconv.HTTPResponseStatusCode(v.HTTPResponseStatusCode))
+	}
+	return attrs
+}
 
+func (v *Values) appendCommonAttributes(attrs []attribute.KeyValue) []attribute.KeyValue {
 	method := otherMethodAttr
 	if m, ok := knownMethods[v.HTTPMethod]; ok {
 		method = m
 	}
-	result = append(result,
+	attrs = append(attrs,
 		method,
 		semconv.ServerAddress(v.ServerAddress),
 		semconv.URLScheme(v.URLScheme),
 	)
 	if v.HTTPRoute != "" {
-		result = append(result, semconv.HTTPRoute(v.HTTPRoute))
+		attrs = append(attrs, semconv.HTTPRoute(v.HTTPRoute))
 	}
 	if v.ServerPort != 0 {
-		result = append(result, semconv.ServerPort(v.ServerPort))
+		attrs = append(attrs, semconv.ServerPort(v.ServerPort))
 	}
 	if v.HTTPMethodOriginal != "" {
-		result = append(result, semconv.HTTPRequestMethodOriginal(v.HTTPMethodOriginal))
+		attrs = append(attrs, semconv.HTTPRequestMethodOriginal(v.HTTPMethodOriginal))
 	}
 	if v.NetworkProtocolName != "" {
-		result = append(result, semconv.NetworkProtocolName(v.NetworkProtocolName))
+		attrs = append(attrs, semconv.NetworkProtocolName(v.NetworkProtocolName))
 	}
 	if v.NetworkProtocolVersion != "" {
-		result = append(result, semconv.NetworkProtocolVersion(v.NetworkProtocolVersion))
+		attrs = append(attrs, semconv.NetworkProtocolVersion(v.NetworkProtocolVersion))
 	}
-	return result
+	return attrs
 }
 
 // http.request.method: HTTP request method value SHOULD be “known” to the instrumentation.
