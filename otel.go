@@ -214,14 +214,14 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 
 			err := next(c)
 
-			resp, status := echo.ResolveResponseStatus(c.Response(), err)
-			span.SetStatus(SpanStatus(status, err))
 			if err != nil {
 				span.SetAttributes(semconv.ErrorType(err))
 				if config.OnNextError != nil {
 					config.OnNextError(c, err)
 				}
 			}
+			resp, status := echo.ResolveResponseStatus(c.Response(), err)
+			span.SetStatus(SpanStatus(status, err))
 
 			ev.HTTPResponseStatusCode = status
 			if resp != nil {
