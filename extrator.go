@@ -11,10 +11,9 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
-)
 
-import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
 	"go.opentelemetry.io/otel/semconv/v1.39.0/httpconv"
 )
@@ -559,4 +558,14 @@ func SpanNameFormatter(v Values) string {
 		return method + " " + v.HTTPRoute
 	}
 	return method
+}
+
+func spanStatus(code int) (codes.Code, string) {
+	if code < 100 || code >= 600 {
+		return codes.Error, fmt.Sprintf("Invalid HTTP status code %d", code)
+	}
+	if code >= 500 {
+		return codes.Error, ""
+	}
+	return codes.Unset, ""
 }

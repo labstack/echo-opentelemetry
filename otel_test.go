@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/semconv/v1.39.0/httpconv"
 	"go.opentelemetry.io/otel/trace"
@@ -24,6 +25,8 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestGetSpanNotInstrumented(t *testing.T) {
@@ -444,6 +447,50 @@ func TestNewMiddlewareWithConfig_Metric(t *testing.T) {
 			},
 		},
 	}, sm.Metrics[0], metricdatatest.IgnoreTimestamp(), metricdatatest.IgnoreValue(), metricdatatest.IgnoreExemplars())
+}
+
+func TestSpanStatusOnHTTP500(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler echo.HandlerFunc
+	}{
+		{
+			name: "handler writes 500 status code directly",
+			handler: func(c *echo.Context) error {
+				return c.String(http.StatusInternalServerError, "internal server error")
+			},
+		},
+		{
+			name: "handler returns echo HTTP error with 500",
+			handler: func(c *echo.Context) error {
+				return echo.NewHTTPError(http.StatusInternalServerError, "internal server error")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exporter := tracetest.NewInMemoryExporter()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+
+			e := echo.New()
+			e.Use(NewMiddlewareWithConfig(Config{
+				ServerName:     "foobar",
+				TracerProvider: tp,
+			}))
+			e.GET("/error", tt.handler)
+
+			r := httptest.NewRequest(http.MethodGet, "/error", http.NoBody)
+			w := httptest.NewRecorder()
+			e.ServeHTTP(w, r)
+
+			assert.Equal(t, http.StatusInternalServerError, w.Result().StatusCode)
+
+			spans := exporter.GetSpans()
+			assert.Len(t, spans, 1)
+			assert.Equal(t, codes.Error, spans[0].Status.Code)
+		})
+	}
 }
 
 func TestConfig_OnNextError(t *testing.T) {
