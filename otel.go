@@ -11,7 +11,6 @@ import (
 	"github.com/labstack/echo/v5/middleware"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
@@ -213,30 +212,27 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 				}
 			}()
 
-			// serve the request to the next middleware
 			err := next(c)
+
 			if err != nil {
 				span.SetAttributes(semconv.ErrorType(err))
-				span.SetStatus(codes.Error, err.Error())
 				if config.OnNextError != nil {
 					config.OnNextError(c, err)
 				}
 			}
-
 			resp, status := echo.ResolveResponseStatus(c.Response(), err)
+			span.SetStatus(SpanStatus(status, err))
+
 			ev.HTTPResponseStatusCode = status
 			if resp != nil {
 				ev.HTTPResponseBodySize = resp.Size
 			}
-			span.SetStatus(spanStatus(status))
-
 			endAttributes := ev.SpanEndAttributes()
 			if config.SpanEndAttributes != nil {
 				endAttributes = config.SpanEndAttributes(c, &ev, endAttributes)
 			}
 			span.SetAttributes(endAttributes...)
 
-			// Record the server-side attributes.
 			iv := RecordValues{
 				RequestDuration: time.Since(requestStartTime),
 				ExtractedValues: ev,
