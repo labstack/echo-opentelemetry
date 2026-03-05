@@ -228,6 +228,7 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 			if resp != nil {
 				ev.HTTPResponseBodySize = resp.Size
 			}
+			span.SetStatus(spanStatus(status))
 
 			endAttributes := ev.SpanEndAttributes()
 			if config.SpanEndAttributes != nil {
