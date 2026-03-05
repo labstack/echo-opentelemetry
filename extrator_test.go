@@ -2,11 +2,13 @@ package echootel
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 func TestValues_ExtractRequest(t *testing.T) {
@@ -680,6 +682,82 @@ func TestSplitProto(t *testing.T) {
 
 			assert.Equal(t, tc.expectName, name)
 			assert.Equal(t, tc.expectVersion, version)
+		})
+	}
+}
+
+func TestSpanStatus(t *testing.T) {
+	var testCases = []struct {
+		name       string
+		whenStatus int
+		whenError  error
+		expectCode codes.Code
+		expectDesc string
+	}{
+		{
+			name:       "error overrides status code",
+			whenStatus: 200,
+			whenError:  errors.New("network error"),
+			expectCode: codes.Error,
+			expectDesc: "network error",
+		},
+		{
+			name:       "invalid status code below range",
+			whenStatus: 99,
+			whenError:  nil,
+			expectCode: codes.Error,
+			expectDesc: "Invalid HTTP status code 99",
+		},
+		{
+			name:       "invalid status code above range",
+			whenStatus: 600,
+			whenError:  nil,
+			expectCode: codes.Error,
+			expectDesc: "Invalid HTTP status code 600",
+		},
+		{
+			name:       "server error 500",
+			whenStatus: 500,
+			whenError:  nil,
+			expectCode: codes.Error,
+			expectDesc: "",
+		},
+		{
+			name:       "server error 503",
+			whenStatus: 503,
+			whenError:  nil,
+			expectCode: codes.Error,
+			expectDesc: "",
+		},
+		{
+			name:       "informational status 100",
+			whenStatus: 100,
+			whenError:  nil,
+			expectCode: codes.Unset,
+			expectDesc: "",
+		},
+		{
+			name:       "success status 200",
+			whenStatus: 200,
+			whenError:  nil,
+			expectCode: codes.Unset,
+			expectDesc: "",
+		},
+		{
+			name:       "redirect status 302",
+			whenStatus: 302,
+			whenError:  nil,
+			expectCode: codes.Unset,
+			expectDesc: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, desc := SpanStatus(tc.whenStatus, tc.whenError)
+
+			assert.Equal(t, tc.expectCode, code)
+			assert.Equal(t, tc.expectDesc, desc)
 		})
 	}
 }
