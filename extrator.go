@@ -560,7 +560,8 @@ func SpanNameFormatter(v Values) string {
 	return method
 }
 
-// SpanStatus returns the span status code and error description based on the HTTP status code and error.
+// SpanStatus returns the span status code and error description for a server span, based on the
+// resolved HTTP status code (see [echo.ResolveResponseStatus]) and the error returned from the handler.
 //
 // Spec:
 //
@@ -568,19 +569,30 @@ func SpanNameFormatter(v Values) string {
 //	 (e.g., network error receiving the response body; or 3xx codes with max redirects exceeded), in which case status
 //	 MUST be set to Error.
 //
+//	For HTTP status codes in the 4xx range span status MUST be left unset in case of SpanKind.SERVER and SHOULD be set
+//	 to Error in case of SpanKind.CLIENT.
+//
 // Reference:
 // - [Span.Status](https://opentelemetry.io/docs/specs/semconv/http/http-spans/#status)
 // - [Recording errors on spans](https://opentelemetry.io/docs/specs/semconv/general/recording-errors/)
 func SpanStatus(code int, err error) (codes.Code, string) {
-	if err != nil { // When the operation ends with an error, instrumentation: SHOULD set the span status code to Error
-		return codes.Error, err.Error()
-	}
-
 	if code < 100 || code >= 600 {
 		return codes.Error, fmt.Sprintf("Invalid HTTP status code %d", code)
 	}
 	if code >= 500 {
+		if err != nil {
+			return codes.Error, err.Error()
+		}
 		return codes.Error, ""
+	}
+	if code >= 400 {
+		// this instrumentation creates server spans, and for those the convention is to leave
+		// the status unset on 4xx responses, even when the handler returned an error that
+		// resolves to 4xx (e.g. echo.NewHTTPError(400)).
+		return codes.Unset, ""
+	}
+	if err != nil { // an error alongside a 1xx-3xx status indicates another error occurred
+		return codes.Error, err.Error()
 	}
 	return codes.Unset, ""
 }
