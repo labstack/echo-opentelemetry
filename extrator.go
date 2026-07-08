@@ -561,7 +561,7 @@ func SpanNameFormatter(v Values) string {
 }
 
 // SpanStatus returns the span status code and error description for a server span, based on the
-// resolved HTTP status code (see [echo.ResolveResponseStatus]) and the error returned from the handler.
+// resolved HTTP response status code and the error that occurred while handling the request.
 //
 // Spec:
 //
@@ -587,8 +587,8 @@ func SpanStatus(code int, err error) (codes.Code, string) {
 	}
 	if code >= 400 {
 		// this instrumentation creates server spans, and for those the convention is to leave
-		// the status unset on 4xx responses, even when the handler returned an error that
-		// resolves to 4xx (e.g. echo.NewHTTPError(400)).
+		// the status unset on 4xx responses, even when the error is what the status code was
+		// resolved from.
 		return codes.Unset, ""
 	}
 	if err != nil { // an error alongside a 1xx-3xx status indicates another error occurred

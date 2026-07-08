@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/labstack/echo/v5"
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -752,9 +751,9 @@ func TestSpanStatus(t *testing.T) {
 			expectDesc: "",
 		},
 		{
-			name:       "client error 400 with handler error is left unset for server span",
+			name:       "client error 400 with error is left unset for server span",
 			whenStatus: 400,
-			whenError:  echo.NewHTTPError(http.StatusBadRequest, "invalid request"),
+			whenError:  errors.New("invalid request"),
 			expectCode: codes.Unset,
 			expectDesc: "",
 		},
