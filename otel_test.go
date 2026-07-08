@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/semconv/v1.39.0/httpconv"
 	"go.opentelemetry.io/otel/trace"
@@ -489,6 +489,70 @@ func TestSpanStatusOnHTTP500(t *testing.T) {
 			spans := exporter.GetSpans()
 			assert.Len(t, spans, 1)
 			assert.Equal(t, codes.Error, spans[0].Status.Code)
+		})
+	}
+}
+
+// statusCoderError implements echo.HTTPStatusCoder so echo.ResolveResponseStatus can resolve its status code.
+type statusCoderError struct {
+	code int
+	msg  string
+}
+
+func (e *statusCoderError) Error() string   { return e.msg }
+func (e *statusCoderError) StatusCode() int { return e.code }
+
+func TestSpanStatusOnHTTP4xx(t *testing.T) {
+	tests := []struct {
+		name         string
+		handler      echo.HandlerFunc
+		expectStatus int
+	}{
+		{
+			name: "handler writes 400 status code directly",
+			handler: func(c *echo.Context) error {
+				return c.String(http.StatusBadRequest, "bad request")
+			},
+			expectStatus: http.StatusBadRequest,
+		},
+		{
+			name: "handler returns echo HTTP error with 400",
+			handler: func(c *echo.Context) error {
+				return echo.NewHTTPError(http.StatusBadRequest, "bad request")
+			},
+			expectStatus: http.StatusBadRequest,
+		},
+		{
+			name: "handler returns HTTPStatusCoder error with 422",
+			handler: func(c *echo.Context) error {
+				return &statusCoderError{code: http.StatusUnprocessableEntity, msg: "validation failed"}
+			},
+			expectStatus: http.StatusUnprocessableEntity,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exporter := tracetest.NewInMemoryExporter()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+
+			e := echo.New()
+			e.Use(NewMiddlewareWithConfig(Config{
+				ServerName:     "foobar",
+				TracerProvider: tp,
+			}))
+			e.GET("/error", tt.handler)
+
+			r := httptest.NewRequest(http.MethodGet, "/error", http.NoBody)
+			w := httptest.NewRecorder()
+			e.ServeHTTP(w, r)
+
+			assert.Equal(t, tt.expectStatus, w.Result().StatusCode)
+
+			spans := exporter.GetSpans()
+			assert.Len(t, spans, 1)
+			// per the semantic conventions, span status is left unset for 4xx responses on server spans
+			assert.Equal(t, codes.Unset, spans[0].Status.Code)
 		})
 	}
 }

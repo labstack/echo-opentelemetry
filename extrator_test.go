@@ -702,6 +702,13 @@ func TestSpanStatus(t *testing.T) {
 			expectDesc: "network error",
 		},
 		{
+			name:       "error with invalid status code",
+			whenStatus: 0,
+			whenError:  errors.New("network error"),
+			expectCode: codes.Error,
+			expectDesc: "Invalid HTTP status code 0",
+		},
+		{
 			name:       "invalid status code below range",
 			whenStatus: 99,
 			whenError:  nil,
@@ -727,6 +734,27 @@ func TestSpanStatus(t *testing.T) {
 			whenStatus: 503,
 			whenError:  nil,
 			expectCode: codes.Error,
+			expectDesc: "",
+		},
+		{
+			name:       "server error 500 with error keeps error description",
+			whenStatus: 500,
+			whenError:  errors.New("something failed"),
+			expectCode: codes.Error,
+			expectDesc: "something failed",
+		},
+		{
+			name:       "client error 404 is left unset for server span",
+			whenStatus: 404,
+			whenError:  nil,
+			expectCode: codes.Unset,
+			expectDesc: "",
+		},
+		{
+			name:       "client error 400 with error is left unset for server span",
+			whenStatus: 400,
+			whenError:  errors.New("invalid request"),
+			expectCode: codes.Unset,
 			expectDesc: "",
 		},
 		{
