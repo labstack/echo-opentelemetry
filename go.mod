@@ -3,14 +3,14 @@ module github.com/labstack/echo-opentelemetry
 go 1.25.0
 
 require (
-	github.com/labstack/echo/v5 v5.0.4
+	github.com/labstack/echo/v5 v5.2.1
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/contrib/propagators/b3 v1.42.0
-	go.opentelemetry.io/otel v1.42.0
-	go.opentelemetry.io/otel/metric v1.42.0
+	go.opentelemetry.io/otel v1.44.0
+	go.opentelemetry.io/otel/metric v1.44.0
 	go.opentelemetry.io/otel/sdk v1.42.0
 	go.opentelemetry.io/otel/sdk/metric v1.42.0
-	go.opentelemetry.io/otel/trace v1.42.0
+	go.opentelemetry.io/otel/trace v1.44.0
 )
 
 require (
