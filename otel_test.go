@@ -105,6 +105,142 @@ func TestPropagationWithCustomPropagators(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Result().StatusCode, "should call the 'user' handler")
 }
 
+func TestPublicEndpoint(t *testing.T) {
+	tests := []struct {
+		name       string
+		traceFlags trace.TraceFlags
+	}{
+		{
+			name:       "sampled remote trace context is not used as parent",
+			traceFlags: trace.FlagsSampled,
+		},
+		{
+			name:       "unsampled remote trace context can not suppress tracing",
+			traceFlags: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exporter := tracetest.NewInMemoryExporter()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+			prop := propagation.TraceContext{}
+
+			remoteSc := trace.NewSpanContext(trace.SpanContextConfig{
+				TraceID:    trace.TraceID{0x01},
+				SpanID:     trace.SpanID{0x01},
+				TraceFlags: tt.traceFlags,
+			})
+
+			e := echo.New()
+			e.Use(NewMiddlewareWithConfig(Config{
+				ServerName:     "foobar",
+				TracerProvider: tp,
+				Propagators:    prop,
+				PublicEndpoint: true,
+			}))
+			e.GET("/user/:id", func(c *echo.Context) error {
+				return c.NoContent(http.StatusOK)
+			})
+
+			r := httptest.NewRequest(http.MethodGet, "/user/123", http.NoBody)
+			prop.Inject(trace.ContextWithRemoteSpanContext(t.Context(), remoteSc), propagation.HeaderCarrier(r.Header))
+			w := httptest.NewRecorder()
+			e.ServeHTTP(w, r)
+
+			assert.Equal(t, http.StatusOK, w.Result().StatusCode)
+
+			spans := exporter.GetSpans()
+			if assert.Len(t, spans, 1, "span must be recorded regardless of the remote sampling flag") {
+				span := spans[0]
+				assert.NotEqual(t, remoteSc.TraceID(), span.SpanContext.TraceID(), "span must start a new trace")
+				assert.False(t, span.Parent.IsValid(), "span must be a root span")
+				if assert.Len(t, span.Links, 1, "remote trace context must be recorded as a span link") {
+					assert.Equal(t, remoteSc.TraceID(), span.Links[0].SpanContext.TraceID())
+					assert.Equal(t, remoteSc.SpanID(), span.Links[0].SpanContext.SpanID())
+				}
+			}
+		})
+	}
+}
+
+func TestPublicEndpointFn(t *testing.T) {
+	remoteSc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    trace.TraceID{0x01},
+		SpanID:     trace.SpanID{0x01},
+		TraceFlags: trace.FlagsSampled,
+	})
+
+	tests := []struct {
+		name           string
+		fn             func(c *echo.Context, remote trace.SpanContext) bool
+		expectNewTrace bool
+	}{
+		{
+			name:           "fn returns true, remote trace context is linked instead of continued",
+			fn:             func(c *echo.Context, remote trace.SpanContext) bool { return true },
+			expectNewTrace: true,
+		},
+		{
+			name:           "fn returns false, remote trace context is continued",
+			fn:             func(c *echo.Context, remote trace.SpanContext) bool { return false },
+			expectNewTrace: false,
+		},
+		{
+			name: "fn can inspect the remote trace context",
+			fn: func(c *echo.Context, remote trace.SpanContext) bool {
+				// continue the trace only when it comes from a trusted trace ID
+				return remote.TraceID() != (trace.TraceID{0x01})
+			},
+			expectNewTrace: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exporter := tracetest.NewInMemoryExporter()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+			prop := propagation.TraceContext{}
+
+			e := echo.New()
+			e.Use(NewMiddlewareWithConfig(Config{
+				ServerName:       "foobar",
+				TracerProvider:   tp,
+				Propagators:      prop,
+				PublicEndpointFn: tt.fn,
+			}))
+			e.GET("/user/:id", func(c *echo.Context) error {
+				return c.NoContent(http.StatusOK)
+			})
+
+			r := httptest.NewRequest(http.MethodGet, "/user/123", http.NoBody)
+			prop.Inject(trace.ContextWithRemoteSpanContext(t.Context(), remoteSc), propagation.HeaderCarrier(r.Header))
+			w := httptest.NewRecorder()
+			e.ServeHTTP(w, r)
+
+			assert.Equal(t, http.StatusOK, w.Result().StatusCode)
+
+			spans := exporter.GetSpans()
+			if !assert.Len(t, spans, 1) {
+				return
+			}
+			span := spans[0]
+			if tt.expectNewTrace {
+				assert.NotEqual(t, remoteSc.TraceID(), span.SpanContext.TraceID(), "span must start a new trace")
+				assert.False(t, span.Parent.IsValid(), "span must be a root span")
+				if assert.Len(t, span.Links, 1, "remote trace context must be recorded as a span link") {
+					assert.Equal(t, remoteSc.TraceID(), span.Links[0].SpanContext.TraceID())
+					assert.Equal(t, remoteSc.SpanID(), span.Links[0].SpanContext.SpanID())
+				}
+			} else {
+				assert.Equal(t, remoteSc.TraceID(), span.SpanContext.TraceID(), "span must continue the remote trace")
+				assert.Equal(t, remoteSc.SpanID(), span.Parent.SpanID(), "remote span must be the parent")
+				assert.Empty(t, span.Links)
+			}
+		})
+	}
+}
+
 func TestSkipper(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/ping", http.NoBody)
 	w := httptest.NewRecorder()

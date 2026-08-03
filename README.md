@@ -44,6 +44,36 @@ e.Use(echootel.NewMiddlewareWithConfig(echootel.Config{
 }))
 ```
 
+### Public (internet-facing) endpoints
+
+By default, the middleware trusts the incoming trace context (e.g. `traceparent` header) and continues
+that trace as the parent of the server span. For endpoints exposed to untrusted clients this allows
+callers to inject arbitrary trace IDs into your traces or suppress tracing entirely with a
+`sampled=0` flag.
+
+Set `PublicEndpoint` to start a new trace for every request instead. The incoming trace context,
+if present, is recorded as a span link rather than being used as the parent.
+
+```go
+e.Use(echootel.NewMiddlewareWithConfig(echootel.Config{
+  PublicEndpoint: true,
+}))
+```
+
+Use `PublicEndpointFn` to decide per request, for example when the same server serves both
+internal and public routes
+
+```go
+e.Use(echootel.NewMiddlewareWithConfig(echootel.Config{
+  PublicEndpointFn: func(c *echo.Context, remote trace.SpanContext) bool {
+    return !strings.HasPrefix(c.Request().URL.Path, "/internal/")
+  },
+}))
+```
+
+The second argument is the remote span context extracted from the incoming request, so the
+decision can also be based on the incoming trace context itself.
+
 Retrieving the tracer from the Echo context
 ```go
 tp, err := echo.ContextGet[trace.Tracer](c, echootel.TracerKey)
