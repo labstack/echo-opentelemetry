@@ -105,7 +105,7 @@ func TestPropagationWithCustomPropagators(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Result().StatusCode, "should call the 'user' handler")
 }
 
-func TestPublicEndpoint(t *testing.T) {
+func TestPublicEndpointFnAlwaysPublic(t *testing.T) {
 	tests := []struct {
 		name       string
 		traceFlags trace.TraceFlags
@@ -134,10 +134,10 @@ func TestPublicEndpoint(t *testing.T) {
 
 			e := echo.New()
 			e.Use(NewMiddlewareWithConfig(Config{
-				ServerName:     "foobar",
-				TracerProvider: tp,
-				Propagators:    prop,
-				PublicEndpoint: true,
+				ServerName:       "foobar",
+				TracerProvider:   tp,
+				Propagators:      prop,
+				PublicEndpointFn: func(c *echo.Context, remote trace.SpanContext) bool { return true },
 			}))
 			e.GET("/user/:id", func(c *echo.Context) error {
 				return c.NoContent(http.StatusOK)

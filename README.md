@@ -51,17 +51,17 @@ that trace as the parent of the server span. For endpoints exposed to untrusted 
 callers to inject arbitrary trace IDs into your traces or suppress tracing entirely with a
 `sampled=0` flag.
 
-Set `PublicEndpoint` to start a new trace for every request instead. The incoming trace context,
-if present, is recorded as a span link rather than being used as the parent.
+Set `PublicEndpointFn` to start a new trace instead. The incoming trace context,
+if present, is recorded as a span link rather than being used as the parent. To treat every
+request as public:
 
 ```go
 e.Use(echootel.NewMiddlewareWithConfig(echootel.Config{
-  PublicEndpoint: true,
+  PublicEndpointFn: func(c *echo.Context, remote trace.SpanContext) bool { return true },
 }))
 ```
 
-Use `PublicEndpointFn` to decide per request, for example when the same server serves both
-internal and public routes
+The decision is made per request, so the same server can serve both internal and public routes
 
 ```go
 e.Use(echootel.NewMiddlewareWithConfig(echootel.Config{

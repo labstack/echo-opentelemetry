@@ -48,26 +48,23 @@ type Config struct {
 	// Skipper defines a function to skip middleware.
 	Skipper middleware.Skipper
 
-	// PublicEndpoint indicates that this middleware serves a public (internet-facing) endpoint
-	// receiving requests from untrusted clients.
+	// PublicEndpointFn decides per request whether it should be handled as a public
+	// (internet-facing) endpoint receiving requests from untrusted clients.
 	//
-	// When enabled, the incoming trace context (e.g. `traceparent`/`tracestate` headers) is not
-	// used as the parent of the server span. Instead, a new root span (new trace) is started
-	// and the incoming remote span context, if valid, is recorded as a span link. This prevents
-	// untrusted clients from injecting arbitrary trace IDs into your traces or influencing the
-	// sampling decision (e.g. suppressing tracing with a `sampled=0` flag).
-	PublicEndpoint bool
-
-	// PublicEndpointFn allows deciding per request whether it should be handled as a public
-	// endpoint (see PublicEndpoint for the behavior). Requests for which the function returns
-	// true are treated as public endpoint requests.
+	// When the function returns true, the incoming trace context (e.g. `traceparent`/`tracestate`
+	// headers) is not used as the parent of the server span. Instead, a new root span (new trace)
+	// is started and the incoming remote span context, if valid, is recorded as a span link. This
+	// prevents untrusted clients from injecting arbitrary trace IDs into your traces or
+	// influencing the sampling decision (e.g. suppressing tracing with a `sampled=0` flag).
+	//
+	// To treat every request as public:
+	//
+	//	config.PublicEndpointFn = func(c *echo.Context, remote oteltrace.SpanContext) bool { return true }
 	//
 	// The remote span context extracted from the incoming request by Propagators is passed as
 	// the second argument. It can be invalid (see trace.SpanContext.IsValid) when the request
 	// carries no trace context. This allows, for example, trusting only trace contexts that
 	// originate from known internal systems.
-	//
-	// This function is only called when PublicEndpoint is false.
 	PublicEndpointFn func(c *echo.Context, remote oteltrace.SpanContext) bool
 
 	// OnNextError is used to specify how errors returned from the next middleware / handler are handled.
@@ -214,7 +211,7 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 
 			ctx := config.Propagators.Extract(request.Context(), propagation.HeaderCarrier(request.Header))
 			remote := oteltrace.SpanContextFromContext(ctx)
-			if config.PublicEndpoint || (config.PublicEndpointFn != nil && config.PublicEndpointFn(c, remote)) {
+			if config.PublicEndpointFn != nil && config.PublicEndpointFn(c, remote) {
 				spanStartOptions = append(spanStartOptions, oteltrace.WithNewRoot())
 				// keep the incoming (untrusted) trace context visible by linking it to the new root span
 				if remote.IsValid() && remote.IsRemote() {
