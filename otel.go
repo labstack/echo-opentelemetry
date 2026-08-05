@@ -4,6 +4,7 @@
 package echootel
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -66,9 +67,16 @@ type Config struct {
 	// SpanStartOptions configures an additional set of trace.SpanStartOptions, which are applied to each new span.
 	SpanStartOptions []oteltrace.SpanStartOption
 
+	// ContextSpanStartOptions allows the caller to configure an additional set of trace.SpanStartOptions base on echo.Context,
+	// which are applied to each new span
+	ContextSpanStartOptions SpanStartOptionsFunc
+
 	// SpanStartAttributes is used to extract additional attributes from the echo.Context
 	// and return them as a slice of attribute.KeyValue.
 	SpanStartAttributes AttributesFunc
+
+	// SpanStarter allows the caller to configure a custom span starter function.
+	SpanStarter SpanStartFunc
 
 	// SpanEndAttributes is used to extract additional attributes from the echo.Context
 	// and return them as a slice of attribute.KeyValue.
@@ -79,6 +87,29 @@ type Config struct {
 
 	// Metrics is used to record custom metrics instead of default.
 	Metrics MetricsRecorder
+}
+
+// SpanStartOptionsFunc is used to configure an additional set of trace.SpanStartOptions, which are applied to each new span.
+type SpanStartOptionsFunc func(c *echo.Context, opts []oteltrace.SpanStartOption) []oteltrace.SpanStartOption
+
+// NewUntrustedEndpointSpanStartOptionsFunc returns a SpanStartOptionsFunc that will start a new root span if the incoming
+// trace context is untrusted.
+func NewUntrustedEndpointSpanStartOptionsFunc(isUntrustedFunc func(c *echo.Context, remote oteltrace.SpanContext) bool, contextPropagator propagation.TextMapPropagator) SpanStartOptionsFunc {
+	if contextPropagator == nil {
+		contextPropagator = otel.GetTextMapPropagator()
+	}
+	return func(c *echo.Context, startOpts []oteltrace.SpanStartOption) []oteltrace.SpanStartOption {
+		ctx := contextPropagator.Extract(c.Request().Context(), propagation.HeaderCarrier(c.Request().Header))
+		remote := oteltrace.SpanContextFromContext(ctx)
+		if isUntrustedFunc(c, remote) {
+			startOpts = append(startOpts, oteltrace.WithNewRoot())
+			// keep the incoming (untrusted) trace context visible by linking it to the new root span
+			if remote.IsValid() && remote.IsRemote() {
+				startOpts = append(startOpts, oteltrace.WithLinks(oteltrace.Link{SpanContext: remote}))
+			}
+		}
+		return startOpts
+	}
 }
 
 // AttributesFunc is used to extract additional attributes from the echo.Context
@@ -93,6 +124,9 @@ type MetricAttributesFunc func(c *echo.Context, v *Values) []attribute.KeyValue
 type MetricsRecorder interface {
 	Record(c *echo.Context, v RecordValues)
 }
+
+// SpanStartFunc is used to configure a custom span starter function.
+type SpanStartFunc func(c *echo.Context, v *Values, startOpts []oteltrace.SpanStartOption) (context.Context, oteltrace.Span)
 
 // OnErrorFunc is used to specify how errors are handled in the middleware.
 type OnErrorFunc func(c *echo.Context, err error)
@@ -138,6 +172,15 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 		ScopeName,
 		oteltrace.WithInstrumentationVersion(Version),
 	)
+	if config.SpanStarter == nil {
+		config.SpanStarter = func(c *echo.Context, v *Values, startOpts []oteltrace.SpanStartOption) (context.Context, oteltrace.Span) {
+			return tracer.Start(
+				config.Propagators.Extract(c.Request().Context(), propagation.HeaderCarrier(c.Request().Header)),
+				SpanNameFormatter(*v),
+				startOpts...,
+			)
+		}
+	}
 
 	metrics := config.Metrics
 	if config.Metrics == nil {
@@ -189,12 +232,11 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 			if config.SpanStartOptions != nil {
 				spanStartOptions = append(spanStartOptions, config.SpanStartOptions...)
 			}
+			if config.ContextSpanStartOptions != nil {
+				spanStartOptions = config.ContextSpanStartOptions(c, spanStartOptions)
+			}
 
-			ctx, span := tracer.Start(
-				config.Propagators.Extract(request.Context(), propagation.HeaderCarrier(request.Header)),
-				SpanNameFormatter(ev),
-				spanStartOptions...,
-			)
+			ctx, span := config.SpanStarter(c, &ev, spanStartOptions)
 			defer span.End()
 
 			// pass the span through the request context
