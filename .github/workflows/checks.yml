@@ -14,7 +14,7 @@ permissions:
 
 env:
   # run static analysis only with the latest Go version
-  LATEST_GO_VERSION: "1.26"
+  LATEST_GO_VERSION: "1.27"
 
 jobs:
   check:
@@ -23,11 +23,15 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v5
 
-      - name: Set up Go ${{ matrix.go }}
+      - name: Set up Go ${{ env.LATEST_GO_VERSION }}
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.LATEST_GO_VERSION }}
           check-latest: true
+
+      - name: Build example
+        working-directory: example
+        run: go build ./... && go vet ./...
 
       - name: Run golint
         run: |

@@ -4,16 +4,19 @@
 package echootel
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
-	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -21,13 +24,14 @@ const (
 	// TracerKey is the key used to store the tracer in the echo context.
 	TracerKey = "labstack-echo-otelecho-tracer"
 	// ScopeName is the instrumentation scope name.
-	ScopeName = "github.com/labstack/echo-opentelemetry"
+	ScopeName = "github.com/labstack/echo-otel/v5"
 )
 
 // Config is used to configure the middleware.
 type Config struct {
-	// ServerName is set as `server.address` and `server.port` for span and metrics attributes.
-	// Example: "api.example.com" or "example.com:8080"
+	// ServerName is set as `server.address` and `server.port` span attributes. They are not added to metrics by
+	// default (Opt-In in the semantic conventions); add them with MetricAttributes if needed.
+	// Example: "api.example.com" or "example.com:8080". Without a port, `server.port` is not set.
 	//
 	// If known, this value must be set to the server’s canonical (primary) name.
 	// For example, in Apache this corresponds to the ServerName directive
@@ -42,7 +46,7 @@ type Config struct {
 	//
 	// If the primary server name is unknown, this field should be set to an
 	// empty string. In that case, Request.Host will be used to resolve the
-	// effective server name and port.
+	// effective server name and port. Request.Host is chosen by the client.
 	ServerName string
 
 	// Skipper defines a function to skip middleware.
@@ -130,6 +134,9 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 		if sErr != nil {
 			return nil, fmt.Errorf("otel middleware failed to parse server name: %w", sErr)
 		}
+		if host == "" {
+			return nil, fmt.Errorf("otel middleware failed to parse server name: %q has no host", config.ServerName)
+		}
 		serverHost = host
 		serverPort = port
 	}
@@ -177,6 +184,9 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 					config.OnExtractionError(c, err)
 				}
 			}
+			// The route comes from Echo only. Before routing (middleware added with Echo.Pre) it is empty, and
+			// Request.Pattern may hold the pattern of an outer http.ServeMux, which is not the Echo route.
+			ev.HTTPRoute = c.Path()
 			spanAttributes := ev.SpanStartAttributes()
 			if config.SpanStartAttributes != nil {
 				spanAttributes = config.SpanStartAttributes(c, &ev, spanAttributes)
@@ -212,41 +222,107 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 				}
 			}()
 
-			err := next(c)
-
-			if err != nil {
-				span.SetAttributes(semconv.ErrorType(err))
-				if config.OnNextError != nil {
-					config.OnNextError(c, err)
+			// end records the span status, span end attributes and metrics. statusSent is false when no response
+			// status was sent to the client (the handler aborted the request).
+			end := func(err error, statusSent bool) {
+				if ev.HTTPRoute == "" {
+					// middleware added with Echo.Pre runs before routing, so the route is known only after the next handler
+					if route := c.Path(); route != "" {
+						ev.HTTPRoute = route
+						span.SetName(SpanNameFormatter(ev))
+						span.SetAttributes(semconv.HTTPRoute(route))
+					}
 				}
-			}
-			resp, status := echo.ResolveResponseStatus(c.Response(), err)
-			span.SetStatus(SpanStatus(status, err))
 
-			ev.HTTPResponseStatusCode = status
-			if resp != nil {
-				ev.HTTPResponseBodySize = resp.Size
-			}
-			endAttributes := ev.SpanEndAttributes()
-			if config.SpanEndAttributes != nil {
-				endAttributes = config.SpanEndAttributes(c, &ev, endAttributes)
-			}
-			span.SetAttributes(endAttributes...)
+				resp, status := echo.ResolveResponseStatus(c.Response(), err)
+				if !statusSent {
+					status = 0 // http.response.status_code is set only if a status was sent
+				}
+				ev.HTTPResponseStatusCode = status
 
-			iv := RecordValues{
-				RequestDuration: time.Since(requestStartTime),
-				ExtractedValues: ev,
-				Attributes:      nil,
-				// when Attributes are left nil, they are extracted with `iv.ExtractedValues.MetricAttributes()` inside `metrics.Record()` call
+				var pErr *panicError
+				if errors.As(err, &pErr) || status == 0 {
+					// a panic is an error regardless of the status code that was already sent (even 4xx)
+					span.SetStatus(codes.Error, err.Error())
+					ev.ErrorType = ErrorType(0, err)
+				} else {
+					span.SetStatus(SpanStatus(status, err))
+					ev.ErrorType = ErrorType(status, err)
+				}
+				if resp != nil {
+					ev.HTTPResponseBodySize = resp.Size
+				}
+				endAttributes := ev.SpanEndAttributes()
+				if config.SpanEndAttributes != nil {
+					endAttributes = config.SpanEndAttributes(c, &ev, endAttributes)
+				}
+				span.SetAttributes(endAttributes...)
+
+				iv := RecordValues{
+					RequestDuration: time.Since(requestStartTime),
+					ExtractedValues: ev,
+					Attributes:      nil,
+					// when Attributes are left nil, they are extracted with `iv.ExtractedValues.MetricAttributes()` inside `metrics.Record()` call
+				}
+				if config.MetricAttributes != nil {
+					iv.Attributes = config.MetricAttributes(c, &ev)
+				}
+				metrics.Record(c, iv)
 			}
-			if config.MetricAttributes != nil {
-				iv.Attributes = config.MetricAttributes(c, &ev)
+
+			completed := false
+			defer func() {
+				if completed {
+					return
+				}
+				// The next handler (or OnNextError) panicked or called runtime.Goexit. Record the request as failed, then
+				// re-panic so that a Recover middleware added before this one (or http.Server) still handles the panic.
+				r := recover()
+				committed := false
+				if resp, uErr := echo.UnwrapResponse(c.Response()); uErr == nil {
+					committed = resp.Committed
+				}
+				if r == nil { // runtime.Goexit
+					end(&panicError{value: "runtime.Goexit"}, committed)
+					return
+				}
+				defer panic(r) // re-panic with the original value, even if recording panics
+				// http.ErrAbortHandler aborts the response: no status is sent unless the response was already committed
+				end(&panicError{value: r}, committed || r != http.ErrAbortHandler)
+			}()
+
+			err := next(c)
+			if err != nil && config.OnNextError != nil {
+				config.OnNextError(c, err)
 			}
-			metrics.Record(c, iv)
+			completed = true
+
+			recordErr := err
+			var panicStackErr *middleware.PanicStackError
+			if errors.As(err, &panicStackErr) {
+				// Recover middleware added after this one turned a panic into an error
+				recordErr = &panicError{value: panicStackErr.Err}
+			}
+			end(recordErr, true)
 
 			return err
 		}
 	}, nil
+}
+
+// panicError is the error recorded for a request whose handler panicked. Its error type is "panic".
+type panicError struct {
+	value any
+}
+
+func (e *panicError) Error() string     { return fmt.Sprintf("panic: %v", e.value) }
+func (e *panicError) ErrorType() string { return "panic" }
+
+// Unwrap returns the panic value if it is an error, so that a panic value carrying a status code (for example
+// echo.ErrUnauthorized) resolves to the status code the error handler sends for it.
+func (e *panicError) Unwrap() error {
+	err, _ := e.value.(error)
+	return err
 }
 
 // echoMetricsRecorder is the default implementation for Echo metric recording interface

@@ -6,3 +6,6 @@ vendor
 *.iml
 *.out
 .vscode
+
+# example binary
+/example/example

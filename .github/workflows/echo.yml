@@ -14,7 +14,7 @@ permissions:
 
 env:
   # run coverage and benchmarks only with the latest Go version
-  LATEST_GO_VERSION: "1.26"
+  LATEST_GO_VERSION: "1.27"
 
 jobs:
   test:
@@ -25,7 +25,7 @@ jobs:
         # Echo tests with last four major releases (unless there are pressing vulnerabilities)
         # As we depend on `golang.org/x/` libraries which only support last 2 Go releases we could have situations when
         # we derive from last four major releases promise.
-        go: [ "1.25", "1.26" ]
+        go: [ "1.25", "1.26", "1.27" ]
     name: ${{ matrix.os }} @ Go ${{ matrix.go }}
     runs-on: ${{ matrix.os }}
     steps:
@@ -40,6 +40,14 @@ jobs:
       - name: Run Tests
         run: go test -race --coverprofile=coverage.coverprofile --covermode=atomic ./...
 
+      - name: Run Tests with the latest Echo v5
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          go get github.com/labstack/echo/v5@latest
+          go test -race ./...
+
       - name: Upload coverage to Codecov
         if: success() && matrix.go == env.LATEST_GO_VERSION && matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@v5
@@ -49,11 +57,12 @@ jobs:
 
   benchmark:
     needs: test
+    if: github.event_name == 'pull_request'
     name: Benchmark comparison
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code (Previous)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.base_ref }}
           path: previous
@@ -63,7 +72,7 @@ jobs:
         with:
           path: new
 
-      - name: Set up Go ${{ matrix.go }}
+      - name: Set up Go ${{ env.LATEST_GO_VERSION }}
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.LATEST_GO_VERSION }}

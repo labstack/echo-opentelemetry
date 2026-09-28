@@ -3,6 +3,8 @@ package echootel
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"testing"
 
@@ -200,8 +202,29 @@ func TestValues_SpanEndAttributes(t *testing.T) {
 			},
 			expectAttributes: []attribute.KeyValue{
 				attribute.Int("http.response.status_code", 200),
-				attribute.Int("http.request.body.size", 999),
-				attribute.Int("http.response.body.size", 1000),
+			},
+		},
+		{
+			name: "no status sent",
+			given: Values{
+				HTTPResponseStatusCode: 0,
+				ErrorType:              "panic",
+			},
+			expectAttributes: []attribute.KeyValue{
+				attribute.String("error.type", "panic"),
+			},
+		},
+		{
+			name: "request ended with an error",
+			given: Values{
+				HTTPRequestBodySize:    0,
+				HTTPResponseBodySize:   21,
+				HTTPResponseStatusCode: 500,
+				ErrorType:              "500",
+			},
+			expectAttributes: []attribute.KeyValue{
+				attribute.Int("http.response.status_code", 500),
+				attribute.String("error.type", "500"),
 			},
 		},
 	}
@@ -234,9 +257,7 @@ func TestValues_MetricAttributes(t *testing.T) {
 			},
 			expectAttributes: []attribute.KeyValue{
 				attribute.String("http.request.method", "GET"),
-				attribute.String("http.request.method_original", "gEt"),
 				attribute.String("url.scheme", "http"),
-				attribute.String("server.address", "example.com"),
 				attribute.String("network.protocol.name", "http"),
 				attribute.String("network.protocol.version", "1.1"),
 				attribute.Int64("http.response.status_code", 200),
@@ -257,12 +278,26 @@ func TestValues_MetricAttributes(t *testing.T) {
 			expectAttributes: []attribute.KeyValue{
 				attribute.String("http.request.method", "GET"),
 				attribute.String("url.scheme", "http"),
-				attribute.String("server.address", "example.com"),
-				attribute.Int("server.port", 9999),
 				attribute.String("network.protocol.name", "http"),
 				attribute.String("network.protocol.version", "1.1"),
 				attribute.Int64("http.response.status_code", 200),
 				attribute.String("http.route", "/path/${id}"),
+			},
+		},
+		{
+			name: "request ended with an error",
+			given: Values{
+				HTTPMethod:             "GET",
+				ServerAddress:          "example.com",
+				URLScheme:              "http",
+				HTTPResponseStatusCode: 503,
+				ErrorType:              "503",
+			},
+			expectAttributes: []attribute.KeyValue{
+				attribute.String("http.request.method", "GET"),
+				attribute.String("url.scheme", "http"),
+				attribute.Int64("http.response.status_code", 503),
+				attribute.String("error.type", "503"),
 			},
 		},
 	}
@@ -622,6 +657,18 @@ func TestSplitProto(t *testing.T) {
 			expectVersion: "1.1",
 		},
 		{
+			name:          "HTTP/2.0 is reported as 2",
+			whenProto:     "HTTP/2.0",
+			expectName:    "http",
+			expectVersion: "2",
+		},
+		{
+			name:          "HTTP/3.0 is reported as 3",
+			whenProto:     "HTTP/3.0",
+			expectName:    "http",
+			expectVersion: "3",
+		},
+		{
 			name:          "quic uppercase",
 			whenProto:     "QUIC/2",
 			expectName:    "quic",
@@ -789,3 +836,124 @@ func TestSpanStatus(t *testing.T) {
 		})
 	}
 }
+
+// testStatusError carries an HTTP status code, like Echo's HTTPError.
+type testStatusError struct {
+	code int
+}
+
+func (e *testStatusError) Error() string   { return fmt.Sprintf("status %d", e.code) }
+func (e *testStatusError) StatusCode() int { return e.code }
+
+func TestErrorType(t *testing.T) {
+	var testCases = []struct {
+		name       string
+		whenStatus int
+		whenError  error
+		expect     string
+	}{
+		{
+			name:       "success status 200",
+			whenStatus: 200,
+		},
+		{
+			name:       "redirect status 302",
+			whenStatus: 302,
+		},
+		{
+			name:       "client error 404 is not an error for server span",
+			whenStatus: 404,
+		},
+		{
+			name:       "client error 400 with error is not an error for server span",
+			whenStatus: 400,
+			whenError:  &testStatusError{code: 400},
+		},
+		{
+			name:       "server error 500 without error value",
+			whenStatus: 500,
+			expect:     "500",
+		},
+		{
+			name:       "server error 503 with error carrying status code",
+			whenStatus: 503,
+			whenError:  &testStatusError{code: 503},
+			expect:     "503",
+		},
+		{
+			name:       "server error 500 with wrapped error carrying status code",
+			whenStatus: 500,
+			whenError:  fmt.Errorf("handler: %w", &testStatusError{code: 500}),
+			expect:     "500",
+		},
+		{
+			name:       "server error 500 with plain error uses error type",
+			whenStatus: 500,
+			whenError:  errors.New("something failed"),
+			expect:     "*errors.errorString",
+		},
+		{
+			name:       "server error 500 with fmt.Errorf wrapped error reports the wrapped error type",
+			whenStatus: 500,
+			whenError:  fmt.Errorf("db: %w", fmt.Errorf("query: %w", &net.OpError{Op: "read", Err: errors.New("reset")})),
+			expect:     "*net.OpError",
+		},
+		{
+			name:       "server error 500 with errors.Join reports the join type",
+			whenStatus: 500,
+			whenError:  errors.Join(errors.New("a"), errors.New("b")),
+			expect:     "*errors.joinError",
+		},
+		{
+			name:       "server error 500 with fmt.Errorf wrapping two errors reports the wrapper type",
+			whenStatus: 500,
+			whenError:  fmt.Errorf("%w and %w", errors.New("a"), errors.New("b")),
+			expect:     "*fmt.wrapErrors",
+		},
+		{
+			name:       "server error 500 with ErrorType method in the error chain",
+			whenStatus: 500,
+			whenError:  fmt.Errorf("handler: %w", testTypedError{}),
+			expect:     "test.custom",
+		},
+		{
+			name:       "error alongside success status uses error type",
+			whenStatus: 200,
+			whenError:  errors.New("network error"),
+			expect:     "*errors.errorString",
+		},
+		{
+			name:       "invalid status code with error uses error type",
+			whenStatus: 0,
+			whenError:  errors.New("network error"),
+			expect:     "*errors.errorString",
+		},
+		{
+			name:       "status code above 599 without error reports the code",
+			whenStatus: 799,
+			expect:     "799",
+		},
+		{
+			name:       "status code below 100 without error",
+			whenStatus: 99,
+			expect:     "_OTHER",
+		},
+		{
+			name:       "status code above 999 without error",
+			whenStatus: 1000,
+			expect:     "_OTHER",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expect, ErrorType(tc.whenStatus, tc.whenError))
+		})
+	}
+}
+
+// testTypedError implements ErrorType() string, which semconv.ErrorType prefers over the Go type.
+type testTypedError struct{}
+
+func (testTypedError) Error() string     { return "typed" }
+func (testTypedError) ErrorType() string { return "test.custom" }

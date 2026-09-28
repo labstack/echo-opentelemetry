@@ -1,4 +1,4 @@
-PKG := "github.com/labstack/echo-opentelemetry"
+PKG := "github.com/labstack/echo-otel/v5"
 PKG_LIST := $(shell go list ${PKG}/...)
 
 .DEFAULT_GOAL := check
@@ -35,6 +35,6 @@ format: ## Format the source code
 help: ## Display this help screen
 	@grep -h -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
 
-goversion ?= "1.26"
-test_version: ## Run tests inside Docker with given version (defaults to 1.26 oldest supported). Example: make test_version goversion=1.26
+goversion ?= "1.25"
+test_version: ## Run tests inside Docker with given version (defaults to 1.25 oldest supported). Example: make test_version goversion=1.25
 	@docker run --rm -it -v $(shell pwd):/project golang:$(goversion) /bin/sh -c "cd /project && make race"

@@ -14,8 +14,8 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 
-	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
-	"go.opentelemetry.io/otel/semconv/v1.39.0/httpconv"
+	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
+	"go.opentelemetry.io/otel/semconv/v1.40.0/httpconv"
 )
 
 /*
@@ -33,7 +33,8 @@ import (
  5. Determine if the request / response ended with an error
  6. Extract response values from HTTP response to Values struct
 	  6.1. Determine the response status that was sent to the client `v.HTTPResponseStatusCode = ?`
-		6.2. Extract response body size `v.HTTPResponseBodySize = ?`
+		6.2. Determine the error type if the request ended with an error `v.ErrorType = ErrorType(status, err)`
+		6.3. Extract response body size `v.HTTPResponseBodySize = ?`
  7. Attributes from response can be acquired from extracted values with `attr := v.SpanEndAttributes()`
    7.1. If your middleware needs to support additional end attributes, add them to attributes.
  8. Create a RecordValues struct for metrics recording `iv := RecordValues{...}`.
@@ -111,7 +112,9 @@ func (m *Metrics) Record(ctx context.Context, v RecordValues) {
 	o := metric.WithAttributeSet(attribute.NewSet(attrs...))
 
 	m.requestDurationHistogram.Inst().Record(ctx, v.RequestDuration.Seconds(), o)
-	m.requestBodySizeHistogram.Inst().Record(ctx, v.ExtractedValues.HTTPRequestBodySize, o)
+	if v.ExtractedValues.HTTPRequestBodySize >= 0 { // -1 means unknown size (chunked or streamed body)
+		m.requestBodySizeHistogram.Inst().Record(ctx, v.ExtractedValues.HTTPRequestBodySize, o)
+	}
 	m.responseBodySizeHistogram.Inst().Record(ctx, v.ExtractedValues.HTTPResponseBodySize, o)
 }
 
@@ -148,32 +151,34 @@ type Values struct {
 	//
 	// Requirement Level:
 	//  * span - conditionally required if raw value differs from `http.request.method` (different case) or `http.request.method` is `_OTHER`
-	//  * metric - opt in, same rules as span
-	HTTPMethodOriginal string // metric, span
+	//  * metric - not used, as the value is chosen by the client and would make metric cardinality unbounded
+	HTTPMethodOriginal string // span
 
 	// ServerAddress (`server.address`) is the Name of the local HTTP server that received the request.
-	// This value can be provided by middleware configuration or extracted from `Request.Host`.
+	// This value can be provided by middleware configuration or extracted from `Request.Host` (together with ServerPort).
 	// Example values: `example.com` `10.1.2.80`, `/tmp/my.sock`
 	// See also: https://opentelemetry.io/docs/specs/semconv/http/http-spans/#setting-serveraddress-and-serverport-attributes
 	// Spec: https://opentelemetry.io/docs/specs/semconv/registry/attributes/server/
 	//
 	// Requirement Level:
 	//  * span - Recommended
-	//  * metric - Opt-In
-	ServerAddress string // metric, span
+	//  * metric - Opt-In, not added by MetricAttributes as `Request.Host` is chosen by the client. Add it with a custom
+	//    metric attributes function when the value comes from configuration.
+	ServerAddress string // span
 
 	// ServerPort (`server.port`) is the Port of the local HTTP server that received the request.
-	// This value can be provided by middleware configuration or extracted from `Request.Host`.
+	// This value can be provided by middleware configuration or extracted from `Request.Host` (only when ServerAddress
+	// is extracted from it too).
 	// Example values: `80` `8080`, `443`
 	// See also: https://opentelemetry.io/docs/specs/semconv/http/http-spans/#setting-serveraddress-and-serverport-attributes
 	// Spec: https://opentelemetry.io/docs/specs/semconv/registry/attributes/server/
 	//
 	// Requirement Level:
 	//  * span - conditionally Required if available and `server.address` is set
-	//  * metric - Opt-In
-	ServerPort int // metric, span
+	//  * metric - Opt-In, not added by MetricAttributes, same as ServerAddress
+	ServerPort int // span
 
-	// NetworkPeerAdress (`network.peer.address`) is peer address of the network connection - IP address or Unix domain socket name.
+	// NetworkPeerAddress (`network.peer.address`) is peer address of the network connection - IP address or Unix domain socket name.
 	// Spec: https://opentelemetry.io/docs/specs/semconv/registry/attributes/network/
 	//
 	// Go: This value is derived from `Request.RemoteAddr` field value.
@@ -198,8 +203,8 @@ type Values struct {
 	// Spec: https://opentelemetry.io/docs/specs/semconv/registry/attributes/client/
 	//
 	// Go: This value is derived by default from `Request.RemoteAddr` field value and is same as `network.peer.address`.
-	//     Middleware creators or users can override with `Request.Header.Get("X-Forwarded-For")` value but be warned
-	//     that it is very easy to spoof HTTP headers.
+	//     The Echo middleware sets it from `Context.RealIP()`, which follows the Echo instance IP extraction settings
+	//     (`Echo.IPExtractor`); headers like `X-Forwarded-For` are easy to spoof when they are trusted from any client.
 	//
 	// Requirement Level:
 	//  * span - Recommended if `network.peer.address` is set.
@@ -268,7 +273,8 @@ type Values struct {
 	// all static path segments, with dynamic path segments represented with placeholders.
 	// Spec: https://opentelemetry.io/docs/specs/semconv/registry/attributes/http/
 	//
-	// Go: This value is taken from `Request.Pattern` field.
+	// Go: The Echo middleware takes this value from `Context.Path()`, the matched Echo route. ExtractRequest uses the
+	//     `Request.Pattern` field when the value is not set.
 	//
 	// Requirement Level:
 	//  * span - Recommended
@@ -278,23 +284,35 @@ type Values struct {
 	// HTTPRequestBodySize (`http.request.body.size`) is the size of the request payload body in bytes. This is the number
 	// of bytes transferred excluding headers and is often, but not always, present as the [Content-Length](https://www.rfc-editor.org/rfc/rfc9110.html#field.content-length)
 	// header. For requests using transport encoding, this should be the compressed size.
-	// Spec: https://opentelemetry.io/docs/specs/semconv/http/http-metrics/#metric-httpclientrequestbodysize
+	// Spec: https://opentelemetry.io/docs/specs/semconv/http/http-metrics/#metric-httpserverrequestbodysize
 	//
-	// Go: This value is taken from `Request.ContentLength` can be negative (-1) if the size is unknown.
+	// Go: This value is taken from `Request.ContentLength` and is negative (-1) if the size is unknown. Unknown size is
+	//     not recorded.
 	//
 	// Requirement Level:
-	//  * span - opt-in attribute
-	//  * metric - optional, is actual Histogram metric (`http.client.request.body.size`) and NOT attribute to metric.
+	//  * span - Opt-In, not added by SpanEndAttributes. Add it with a span end attributes function if needed.
+	//  * metric - optional, is actual Histogram metric (`http.server.request.body.size`) and NOT attribute to metric.
 	HTTPRequestBodySize int64 // metric
 
 	// HTTPResponseStatusCode (`http.response.status_code`) is HTTP response status code.
 	// See also RFC: https://datatracker.ietf.org/doc/html/rfc7231#section-6
 	// Spec: https://opentelemetry.io/docs/specs/semconv/registry/attributes/http/
 	//
+	// Zero means no status was sent (for example the handler aborted the request); the attribute is not set then.
+	//
 	// Requirement Level:
-	//  * span - opt-in attribute
+	//  * span - conditionally Required if and only if one was received/sent
 	//  * metric - conditionally Required if and only if one was received/sent
-	HTTPResponseStatusCode int // metric
+	HTTPResponseStatusCode int // metric, span
+
+	// ErrorType (`error.type`) describes the class of error the request ended with. It is empty when the request did
+	// not end with an error. Use ErrorType function to determine the value.
+	// Spec: https://opentelemetry.io/docs/specs/semconv/registry/attributes/error/
+	//
+	// Requirement Level:
+	//  * span - conditionally Required if request has ended with an error
+	//  * metric - conditionally Required if request has ended with an error
+	ErrorType string // metric, span
 
 	// HTTPResponseBodySize (`http.response.body.size`) is the size of the response payload body in bytes. This is
 	// the number of bytes transferred excluding headers and is often, but not always, present as the
@@ -303,7 +321,7 @@ type Values struct {
 	// Spec: https://opentelemetry.io/docs/specs/semconv/http/http-metrics/#metric-httpserverresponsebodysize
 	//
 	// Requirement Level:
-	//  * span - opt-in attribute
+	//  * span - Opt-In, not added by SpanEndAttributes. Add it with a span end attributes function if needed.
 	//  * metric - optional, is actual Histogram metric (`http.server.response.body.size`) and NOT attribute to metric.
 	HTTPResponseBodySize int64 // metric
 }
@@ -312,14 +330,12 @@ type Values struct {
 func (v *Values) ExtractRequest(r *http.Request) error {
 	var errs []error
 
-	if v.ServerAddress == "" || v.ServerPort == 0 {
+	if v.ServerAddress == "" { // take address and port from the same source, do not mix configuration and Request.Host
 		host, port, err := SplitAddress(r.Host)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("failed to split Request.Host: %w", err))
 		}
-		if v.ServerAddress == "" {
-			v.ServerAddress = host
-		}
+		v.ServerAddress = host
 		if v.ServerPort == 0 {
 			v.ServerPort = port
 		}
@@ -371,6 +387,15 @@ func (v *Values) SpanStartAttributes() []attribute.KeyValue {
 // Use this method instead of `SpanStartAttributes()` when you want to preallocate/reuse attributes slice.
 func (v *Values) AppendStartAttributes(attrs []attribute.KeyValue) []attribute.KeyValue {
 	attrs = v.appendCommonAttributes(attrs)
+	if v.ServerAddress != "" {
+		attrs = append(attrs, semconv.ServerAddress(v.ServerAddress))
+		if v.ServerPort != 0 {
+			attrs = append(attrs, semconv.ServerPort(v.ServerPort))
+		}
+	}
+	if v.HTTPMethodOriginal != "" {
+		attrs = append(attrs, semconv.HTTPRequestMethodOriginal(v.HTTPMethodOriginal))
+	}
 	if v.NetworkPeerAddress != "" {
 		attrs = append(attrs, semconv.NetworkPeerAddress(v.NetworkPeerAddress))
 	}
@@ -390,24 +415,34 @@ func (v *Values) AppendStartAttributes(attrs []attribute.KeyValue) []attribute.K
 }
 
 // SpanEndAttributes returns a list of attributes to be used when ending a span, after the next handler has been executed.
+//
+// It adds `http.response.status_code` (if a status was sent) and `error.type` (if the request ended with an error).
+// The Opt-In `http.request.body.size` and `http.response.body.size` attributes are not added.
 func (v *Values) SpanEndAttributes() []attribute.KeyValue {
-	return v.AppendSpanEndAttributes(make([]attribute.KeyValue, 0, 3))
+	return v.AppendSpanEndAttributes(make([]attribute.KeyValue, 0, 2))
 }
 
 // AppendSpanEndAttributes appends attributes to be used when ending a span, after the next handler has been executed.
 // Use this method instead of `SpanEndAttributes()` when you want to preallocate/reuse attributes slice.
 func (v *Values) AppendSpanEndAttributes(attrs []attribute.KeyValue) []attribute.KeyValue {
-	return append(attrs,
-		semconv.HTTPResponseStatusCode(v.HTTPResponseStatusCode),
-		semconv.HTTPRequestBodySize(int(v.HTTPRequestBodySize)),
-		semconv.HTTPResponseBodySize(int(v.HTTPResponseBodySize)),
-	)
+	if v.HTTPResponseStatusCode != 0 {
+		attrs = append(attrs, semconv.HTTPResponseStatusCode(v.HTTPResponseStatusCode))
+	}
+	if v.ErrorType != "" {
+		attrs = append(attrs, semconv.ErrorTypeKey.String(v.ErrorType))
+	}
+	return attrs
 }
 
 // MetricAttributes creates attributes for metric instruments from extracted values.
+//
+// Only low cardinality attributes are included: `http.request.method`, `url.scheme`, `http.route`,
+// `network.protocol.name`, `network.protocol.version`, `http.response.status_code` and `error.type`. Opt-In attributes
+// whose values the client chooses (`server.address` and `server.port` from `Request.Host`,
+// `http.request.method_original`) are not included.
 // See also: https://opentelemetry.io/docs/specs/semconv/http/http-metrics/
 func (v *Values) MetricAttributes() []attribute.KeyValue {
-	return v.AppendMetricAttributes(make([]attribute.KeyValue, 0, 8+1))
+	return v.AppendMetricAttributes(make([]attribute.KeyValue, 0, 8+2))
 }
 
 // AppendMetricAttributes appends attributes for metric instruments from extracted values.
@@ -417,6 +452,9 @@ func (v *Values) AppendMetricAttributes(attrs []attribute.KeyValue) []attribute.
 	attrs = v.appendCommonAttributes(attrs)
 	if v.HTTPResponseStatusCode != 0 {
 		attrs = append(attrs, semconv.HTTPResponseStatusCode(v.HTTPResponseStatusCode))
+	}
+	if v.ErrorType != "" {
+		attrs = append(attrs, semconv.ErrorTypeKey.String(v.ErrorType))
 	}
 	return attrs
 }
@@ -428,17 +466,10 @@ func (v *Values) appendCommonAttributes(attrs []attribute.KeyValue) []attribute.
 	}
 	attrs = append(attrs,
 		method,
-		semconv.ServerAddress(v.ServerAddress),
 		semconv.URLScheme(v.URLScheme),
 	)
 	if v.HTTPRoute != "" {
 		attrs = append(attrs, semconv.HTTPRoute(v.HTTPRoute))
-	}
-	if v.ServerPort != 0 {
-		attrs = append(attrs, semconv.ServerPort(v.ServerPort))
-	}
-	if v.HTTPMethodOriginal != "" {
-		attrs = append(attrs, semconv.HTTPRequestMethodOriginal(v.HTTPMethodOriginal))
 	}
 	if v.NetworkProtocolName != "" {
 		attrs = append(attrs, semconv.NetworkProtocolName(v.NetworkProtocolName))
@@ -454,7 +485,7 @@ func (v *Values) appendCommonAttributes(attrs []attribute.KeyValue) []attribute.
 // the PATCH method defined in [RFC5789](https://www.rfc-editor.org/rfc/rfc5789.html) and the
 // QUERY method defined in [httpbis-safe-method-w-body](https://datatracker.ietf.org/doc/draft-ietf-httpbis-safe-method-w-body/?include_text=1).
 //
-// Source: OpenTelemetry semantic conventions 1.39.0
+// Source: OpenTelemetry semantic conventions 1.40.0
 var knownMethods = map[string]attribute.KeyValue{
 	http.MethodConnect: semconv.HTTPRequestMethodConnect,
 	http.MethodDelete:  semconv.HTTPRequestMethodDelete,
@@ -501,6 +532,13 @@ func splitProto(proto string) (name string, version string) {
 		name = "spdy"
 	default:
 		name = strings.ToLower(name)
+	}
+	// Go reports HTTP/2 and HTTP/3 as "2.0" and "3.0"; the semantic conventions use "2" and "3".
+	switch version {
+	case "2.0":
+		version = "2"
+	case "3.0":
+		version = "3"
 	}
 	return name, version
 }
@@ -595,4 +633,60 @@ func SpanStatus(code int, err error) (codes.Code, string) {
 		return codes.Error, err.Error()
 	}
 	return codes.Unset, ""
+}
+
+// statusCoder is implemented by errors that carry an HTTP status code, for example Echo v5's HTTPError.
+type statusCoder interface {
+	StatusCode() int
+}
+
+// ErrorType returns the `error.type` attribute value for a server span and metrics, based on the resolved HTTP
+// response status code and the error that occurred while handling the request. It returns an empty string when the
+// request did not end with an error.
+//
+// The request is considered to have ended with an error under the same rules as SpanStatus: a 5xx status code, an
+// invalid status code, or an error alongside a 1xx-3xx status code. A 4xx status code is not an error for server spans.
+//
+// The returned value is:
+//   - the status code as a string (for example "500") for a 5xx status code when there is no error or the error
+//     carries an HTTP status code (implements `StatusCode() int`, like Echo v5's HTTPError),
+//   - the error type for other errors, as returned by semconv.ErrorType: the value of an `ErrorType() string` method
+//     found in the error chain, otherwise the Go type of the error after unwrapping errors created with
+//     `fmt.Errorf("...: %w", err)` (for example "*net.OpError"). Errors joining several errors (`errors.Join`,
+//     `fmt.Errorf` with more than one `%w`) are not unwrapped and report their own type,
+//   - the status code as a string for a status code above 599 without an error (net/http sends codes up to 999),
+//   - "_OTHER" for a status code below 100 without an error.
+//
+// The spec requires low cardinality. Error types are bounded by the code base, unless errors implement
+// `ErrorType() string` with values that vary per request; avoid that, as error.type is also a metric attribute.
+//
+// Spec:
+//
+//	If the request fails with an error before response status code was sent or received, error.type SHOULD be set to
+//	exception type (its fully-qualified class name, if applicable) or a component-specific low cardinality error
+//	identifier.
+//
+//	If response status code was sent or received and status indicates an error according to HTTP span status
+//	definition, error.type SHOULD be set to the status code number (represented as a string), an exception type (if
+//	thrown) or a component-specific error identifier.
+//
+// Reference:
+// - [HTTP server span](https://opentelemetry.io/docs/specs/semconv/http/http-spans/#http-server-span)
+// - [error.type](https://opentelemetry.io/docs/specs/semconv/registry/attributes/error/)
+func ErrorType(code int, err error) string {
+	validCode := code >= 100 && code < 600
+	switch {
+	case validCode && code >= 400 && code < 500:
+		return "" // this instrumentation creates server spans, for those a 4xx response is not an error
+	case validCode && code < 400 && err == nil:
+		return ""
+	case validCode && code >= 500 && (err == nil || errors.As(err, new(statusCoder))):
+		return strconv.Itoa(code)
+	case err != nil:
+		return semconv.ErrorType(err).Value.AsString()
+	case code >= 600 && code <= 999:
+		return strconv.Itoa(code) // invalid for the spec, but net/http sends it
+	default:
+		return semconv.ErrorTypeOther.Value.AsString()
+	}
 }
