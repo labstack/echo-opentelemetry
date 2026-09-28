@@ -3,10 +3,10 @@ name: Run Tests
 on:
   push:
     branches:
-      - main
+      - v4
   pull_request:
     branches:
-      - main
+      - v4
   workflow_dispatch:
 
 permissions:
@@ -40,12 +40,12 @@ jobs:
       - name: Run Tests
         run: go test -race --coverprofile=coverage.coverprofile --covermode=atomic ./...
 
-      - name: Run Tests with the latest Echo v5
+      - name: Run Tests with the latest Echo v4
         if: matrix.os == 'ubuntu-latest'
         env:
           GOTOOLCHAIN: local
         run: |
-          go get github.com/labstack/echo/v5@latest
+          go get github.com/labstack/echo/v4@latest
           go test -race ./...
 
       - name: Upload coverage to Codecov

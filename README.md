@@ -1,5 +1,5 @@
 [![Sourcegraph](https://sourcegraph.com/github.com/labstack/echo-otel/-/badge.svg?style=flat-square)](https://sourcegraph.com/github.com/labstack/echo-otel?badge)
-[![GoDoc](http://img.shields.io/badge/go-documentation-blue.svg?style=flat-square)](https://pkg.go.dev/github.com/labstack/echo-otel/v5)
+[![GoDoc](http://img.shields.io/badge/go-documentation-blue.svg?style=flat-square)](https://pkg.go.dev/github.com/labstack/echo-otel/v4)
 [![Go Report Card](https://goreportcard.com/badge/github.com/labstack/echo-otel?style=flat-square)](https://goreportcard.com/report/github.com/labstack/echo-otel)
 [![License](http://img.shields.io/badge/license-mit-blue.svg?style=flat-square)](https://raw.githubusercontent.com/labstack/echo-otel/main/LICENSE)
 
@@ -20,7 +20,7 @@ tracks API changes (possibly backwards incompatible) and PATCH version is increm
 | v5 | `github.com/labstack/echo-otel/v5` | `main` | `v5.2.1` |
 | v4 | `github.com/labstack/echo-otel/v4` | `v4` | `v4.15.4` |
 
-This is the `main` branch, for Echo v5. `github.com/labstack/echo-opentelemetry` (`v0.0.x`, Echo v5) is the
+This is the `v4` branch, for Echo v4. `github.com/labstack/echo-opentelemetry` (`v0.0.x`, Echo v5) is the
 previous name of this project and is deprecated.
 
 Always include the MAJOR version suffix (`/v5` or `/v4`) in `go get` and imports. Without it,
@@ -31,13 +31,13 @@ Always include the MAJOR version suffix (`/v5` or `/v4`) in `go get` and imports
 Add OpenTelemetry middleware dependency with go modules
 
 ```bash
-go get github.com/labstack/echo-otel/v5
+go get github.com/labstack/echo-otel/v4
 ```
 
 Use as an import statement
 
 ```go
-import echootel "github.com/labstack/echo-otel/v5"
+import echootel "github.com/labstack/echo-otel/v4"
 ```
 
 Add middleware in simplified form, by providing only the server name
@@ -56,7 +56,7 @@ e.Use(echootel.NewMiddlewareWithConfig(echootel.Config{
 
 Retrieving the tracer from the Echo context
 ```go
-tracer, err := echo.ContextGet[trace.Tracer](c, echootel.TracerKey)
+tracer, ok := c.Get(echootel.TracerKey).(trace.Tracer)
 ```
 
 ## Full example
@@ -65,22 +65,20 @@ See [example](example/main.go)
 
 ## Custom error handler
 
-The middleware resolves the response status code for returned errors with `echo.ResolveResponseStatus`: the status of
-an already sent response, the `StatusCode()` of the returned error (for example `echo.HTTPError`), or 500. If you
-use a custom `HTTPErrorHandler` that maps errors to other status codes, let the middleware run the error handler, so it
-reports the status code that was actually sent:
+The middleware resolves the response status code for returned errors the same way as Echo's
+`DefaultHTTPErrorHandler` does (see `echootel.ResolveResponseStatus`). If you use a custom `HTTPErrorHandler` that maps
+errors to other status codes, let the middleware run the error handler, so it reports the status code that was actually
+sent:
 
 ```go
 e.Use(echootel.NewMiddlewareWithConfig(echootel.Config{
   ServerName:  "app.example.com",
-  OnNextError: func(c *echo.Context, err error) { c.Echo().HTTPErrorHandler(c, err) },
+  OnNextError: func(c echo.Context, err error) { c.Error(err) },
 }))
 ```
 
-The error is still returned, so the error handler is called again; make it return early when the response is already
-committed (`resp, err := echo.UnwrapResponse(c.Response()); err == nil && resp.Committed`). Echo's
-`ProblemDetailsHTTPErrorHandler` (Echo v5.4.0+) does this; use the snippet above with it too, as it resolves the status
-of `ProblemErrorer` errors and of `*echo.ProblemError` wrapped in another error differently.
+This is what `otelecho` did by default. The error is still returned, so the error handler is called again; make it
+return early when `c.Response().Committed` is true, as `DefaultHTTPErrorHandler` does.
 
 ## Migrating from otelecho
 
@@ -114,48 +112,8 @@ Also note:
   [Custom error handler](#custom-error-handler) for how to get the same behavior.
 * The instrumentation scope name changes from
   `go.opentelemetry.io/contrib/instrumentation/github.com/labstack/echo/otelecho`
-  to `github.com/labstack/echo-otel/v5`. Update dashboards and alerts that filter on it.
+  to `github.com/labstack/echo-otel/v4`. Update dashboards and alerts that filter on it.
 * The `echo.error` span attribute is not set; use `error.type` and the span status instead.
-
-## Migrating from echo-opentelemetry
-
-`github.com/labstack/echo-opentelemetry` (`v0.0.x`) is the previous name of this project. It is deprecated and receives
-no more changes. Change the import path; the API is the same, except that a `ServerName` without a host is rejected
-(see below):
-
-```go
-import echootel "github.com/labstack/echo-otel/v5"
-```
-
-Telemetry changes compared to `echo-opentelemetry` `v0.0.3`:
-
-* The instrumentation scope name changes from `github.com/labstack/echo-opentelemetry` to
-  `github.com/labstack/echo-otel/v5`. Update dashboards and alerts that filter on it.
-* `error.type` is no longer set for 4xx responses (it used to be `*echo.HTTPError` for a returned HTTPError, and
-  `*echo.httpError` for Echo's own errors such as `echo.ErrNotFound`).
-* A returned 5xx HTTPError reports the status code (`500`) instead of `*echo.HTTPError`.
-* A 5xx response written without an error (for example `c.String(500, ...)`) now reports `error.type`.
-* A returned error with a `StatusCode() int` method reports the status code for a 5xx response instead of its Go type.
-* `error.type` is also added to metrics, see [Errors](#errors).
-* `http.route` and the span name are set when the middleware is added with `Echo.Pre`.
-* An error wrapped with `fmt.Errorf("...: %w", err)` reports the wrapped error's type (for example `*net.OpError`)
-  instead of `*fmt.wrapError`, and an `ErrorType() string` method in the error chain is used when present.
-* `error.type` is now one of the span end attributes: a `Config.SpanEndAttributes` callback must append to the `attr`
-  argument, otherwise `error.type` is dropped (v0.0.3 set it separately).
-* A status code of 600-999 now reports `error.type` (the code).
-* Metrics no longer have `server.address`, `server.port` and `http.request.method_original`; their values come from
-  the request and would make metric cardinality unbounded. They stay on spans. See [Metrics](#metrics).
-* With `ServerName` set, `server.port` comes from `ServerName` only, not from the `Host` header.
-* An unknown request body size (for example a chunked request) is not recorded, instead of `-1`.
-* `http.route` is always the Echo route, never the pattern of an outer `http.ServeMux`.
-* A panic in a handler is recorded (`error.type` `panic`) and then re-panicked, so telemetry is recorded also when a
-  Recover middleware is added before this middleware. With a Recover middleware added after this middleware, the
-  returned `*middleware.PanicStackError` is reported as `panic` instead of its Go type. See [Errors](#errors).
-* A `ServerName` without a host (for example `:8080`) is rejected: `NewMiddleware` panics and `Config.ToMiddleware`
-  returns an error. v0.0.3 accepted it.
-* `network.protocol.version` is `2` for HTTP/2 and `3` for HTTP/3, instead of `2.0` and `3.0`.
-* Spans no longer have `http.request.body.size` and `http.response.body.size` (Opt-In for spans in the semantic
-  conventions). The body size metrics stay. See [Spans](#spans) for how to add them back.
 
 ## Errors
 
@@ -163,8 +121,9 @@ A request that ends with an error sets `error.type` on the span and on the metri
 require. The rules match the span status:
 
 * a 4xx response is not an error for server spans: no `error.type`,
-* a 5xx response without a returned error, or with a returned error that carries the status code (`echo.HTTPError`
-  or any error with a `StatusCode() int` method, also when wrapped), reports the status code, for example `500`,
+* a 5xx response without a returned error, with a returned `*echo.HTTPError` (not wrapped, as Echo's
+  `DefaultHTTPErrorHandler` only recognizes it directly), or with a returned error that has a `StatusCode() int` method,
+  reports the status code that was sent, for example `500`,
 * any other returned error reports its Go type, for example `*net.OpError`. Errors created with
   `fmt.Errorf("...: %w", err)` are unwrapped first; errors joining several errors (`errors.Join`, `fmt.Errorf` with
   more than one `%w`) report their own type. An `ErrorType() string` method anywhere in the error chain takes
@@ -175,9 +134,9 @@ require. The rules match the span status:
 
 The middleware records a panic and then re-panics, so add a Recover middleware before this middleware
 (`e.Use(middleware.Recover())` first). The recorded status is the status of the response that was already sent, the
-status of a panic value that carries one (for example `echo.ErrUnauthorized`), or 500. A Recover middleware added after
-this middleware (with the default configuration) returns the panic as a `*middleware.PanicStackError`, which is also
-reported as `panic`.
+status of a panic value of type `*echo.HTTPError`, or 500. A Recover middleware added after this middleware (with the
+default configuration) calls the error handler itself, so the middleware sees a 500 response without an error and
+reports `error.type` `500`.
 
 `error.type` is part of the span end attributes. A `Config.SpanEndAttributes` callback must append to the `attr`
 argument and return it, otherwise `error.type` and the other end attributes are dropped.
@@ -191,20 +150,21 @@ conventions, with these exceptions:
   it. `http.request.body.size` and `http.response.body.size` are Opt-In and not set either.
 * `http.response.status_code` is not set when no response was sent, for example after an `http.ErrAbortHandler` panic.
 
-`client.address` comes from `c.RealIP()`: the connection's remote address, or the result of `Echo.IPExtractor` when
-it is set.
+`client.address` comes from `c.RealIP()`. Without `Echo.IPExtractor`, Echo v4 takes it from the `X-Forwarded-For` and
+`X-Real-IP` headers, which any client can set. Set `e.IPExtractor` to match your deployment, for example
+`echo.ExtractIPDirect()` when there is no proxy in front of the server.
 
 Add attributes with `SpanStartAttributes` and `SpanEndAttributes`. Both callbacks must append to the `attr` argument and
 return it:
 
 ```go
-SpanStartAttributes: func(c *echo.Context, v *echootel.Values, attr []attribute.KeyValue) []attribute.KeyValue {
+SpanStartAttributes: func(c echo.Context, v *echootel.Values, attr []attribute.KeyValue) []attribute.KeyValue {
   if q := c.Request().URL.RawQuery; q != "" {
     attr = append(attr, semconv.URLQuery(redactQuery(q))) // redactQuery is your own function
   }
   return attr
 },
-SpanEndAttributes: func(c *echo.Context, v *echootel.Values, attr []attribute.KeyValue) []attribute.KeyValue {
+SpanEndAttributes: func(c echo.Context, v *echootel.Values, attr []attribute.KeyValue) []attribute.KeyValue {
   if v.HTTPRequestBodySize >= 0 {
     attr = append(attr, semconv.HTTPRequestBodySize(int(v.HTTPRequestBodySize)))
   }
@@ -223,7 +183,7 @@ and are not added: the `Host` header and the request method are chosen by the cl
 unbounded. Add attributes with a known set of values with `MetricAttributes`, for example:
 
 ```go
-MetricAttributes: func(c *echo.Context, v *echootel.Values) []attribute.KeyValue {
+MetricAttributes: func(c echo.Context, v *echootel.Values) []attribute.KeyValue {
   return append(v.MetricAttributes(), semconv.ServerAddress("api.example.com"))
 },
 ```

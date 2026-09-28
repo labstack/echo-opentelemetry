@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/labstack/echo/v5"
+	"github.com/labstack/echo/v4"
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -32,7 +32,7 @@ import (
 
 func TestGetSpanNotInstrumented(t *testing.T) {
 	router := echo.New()
-	router.GET("/ping", func(c *echo.Context) error {
+	router.GET("/ping", func(c echo.Context) error {
 		// Assert we don't have a span on the context.
 		span := trace.SpanFromContext(c.Request().Context())
 		ok := !span.SpanContext().IsValid()
@@ -64,7 +64,7 @@ func TestPropagationWithGlobalPropagators(t *testing.T) {
 
 	router := echo.New()
 	router.Use(NewMiddlewareWithConfig(Config{ServerName: "foobar", TracerProvider: provider}))
-	router.GET("/user/:id", func(c *echo.Context) error {
+	router.GET("/user/:id", func(c echo.Context) error {
 		span := trace.SpanFromContext(c.Request().Context())
 		assert.Equal(t, sc.TraceID(), span.SpanContext().TraceID())
 		assert.Equal(t, sc.SpanID(), span.SpanContext().SpanID())
@@ -95,7 +95,7 @@ func TestPropagationWithCustomPropagators(t *testing.T) {
 
 	router := echo.New()
 	router.Use(NewMiddlewareWithConfig(Config{ServerName: "foobar", TracerProvider: provider, Propagators: b3}))
-	router.GET("/user/:id", func(c *echo.Context) error {
+	router.GET("/user/:id", func(c echo.Context) error {
 		span := trace.SpanFromContext(c.Request().Context())
 		assert.Equal(t, sc.TraceID(), span.SpanContext().TraceID())
 		assert.Equal(t, sc.SpanID(), span.SpanContext().SpanID())
@@ -109,19 +109,19 @@ func TestPropagationWithCustomPropagators(t *testing.T) {
 func TestSkipper(t *testing.T) {
 	exporter, tp, reader, mp := newTestProviders()
 
-	skipper := func(c *echo.Context) bool {
+	skipper := func(c echo.Context) bool {
 		return c.Request().RequestURI == "/ping"
 	}
 
 	router := echo.New()
 	router.Use(NewMiddlewareWithConfig(Config{ServerName: "foobar", Skipper: skipper, TracerProvider: tp, MeterProvider: mp}))
-	router.GET("/ping", func(c *echo.Context) error {
+	router.GET("/ping", func(c echo.Context) error {
 		span := trace.SpanFromContext(c.Request().Context())
 		assert.False(t, span.SpanContext().HasSpanID())
 		assert.False(t, span.SpanContext().HasTraceID())
 		return c.NoContent(http.StatusOK)
 	})
-	router.GET("/other", func(c *echo.Context) error {
+	router.GET("/other", func(c echo.Context) error {
 		return c.NoContent(http.StatusOK)
 	})
 
@@ -181,10 +181,10 @@ func TestMetrics(t *testing.T) {
 		{
 			name: "with metric attributes callback",
 			givenConfig: Config{
-				SpanStartAttributes: func(c *echo.Context, v *Values, attr []attribute.KeyValue) []attribute.KeyValue {
+				SpanStartAttributes: func(c echo.Context, v *Values, attr []attribute.KeyValue) []attribute.KeyValue {
 					return append(attr, attribute.String("key3", "value3")) // these are not used
 				},
-				MetricAttributes: func(c *echo.Context, v *Values) []attribute.KeyValue {
+				MetricAttributes: func(c echo.Context, v *Values) []attribute.KeyValue {
 					return append(v.MetricAttributes(),
 						attribute.String("key1", "value1"),
 						attribute.String("key2", "value"),
@@ -222,12 +222,12 @@ func TestMetrics(t *testing.T) {
 
 			e := echo.New()
 			e.Use(NewMiddlewareWithConfig(config))
-			e.GET("/user/:id", func(c *echo.Context) error {
+			e.GET("/user/:id", func(c echo.Context) error {
 				id := c.Param("id")
 				assert.Equal(t, "123", id)
 				return c.String(http.StatusOK, id)
 			})
-			e.GET("/fail", func(c *echo.Context) error {
+			e.GET("/fail", func(c echo.Context) error {
 				return echo.NewHTTPError(http.StatusInternalServerError, "failed")
 			})
 
@@ -297,7 +297,7 @@ func TestWithMetricAttributeFn(t *testing.T) {
 	e.Use(NewMiddlewareWithConfig(Config{
 		ServerName:    "test-service",
 		MeterProvider: meterProvider,
-		MetricAttributes: func(c *echo.Context, v *Values) []attribute.KeyValue {
+		MetricAttributes: func(c echo.Context, v *Values) []attribute.KeyValue {
 			return append(
 				v.MetricAttributes(),
 				attribute.String("custom.header", c.Request().Header.Get("X-Test-Header")),
@@ -305,7 +305,7 @@ func TestWithMetricAttributeFn(t *testing.T) {
 		},
 	}))
 
-	e.GET("/test", func(c *echo.Context) error {
+	e.GET("/test", func(c echo.Context) error {
 		return c.String(http.StatusOK, "test response")
 	})
 
@@ -349,7 +349,7 @@ func TestWithEchoMetricAttributeFn(t *testing.T) {
 	e.Use(NewMiddlewareWithConfig(Config{
 		ServerName:    "test-service",
 		MeterProvider: meterProvider,
-		MetricAttributes: func(c *echo.Context, v *Values) []attribute.KeyValue {
+		MetricAttributes: func(c echo.Context, v *Values) []attribute.KeyValue {
 			return append(
 				v.MetricAttributes(),
 				// This is just for testing. Avoid high cardinality metrics such as "id" in production code
@@ -359,7 +359,7 @@ func TestWithEchoMetricAttributeFn(t *testing.T) {
 		},
 	}))
 
-	e.GET("/user/:id", func(c *echo.Context) error {
+	e.GET("/user/:id", func(c echo.Context) error {
 		return c.String(http.StatusOK, "user: "+c.Param("id"))
 	})
 
@@ -412,7 +412,7 @@ func newCustomMetrics(meter metric.Meter) *customMetrics {
 	}
 }
 
-func (m *customMetrics) Record(c *echo.Context, v RecordValues) {
+func (m *customMetrics) Record(c echo.Context, v RecordValues) {
 	o := metric.WithAttributeSet(attribute.NewSet(v.ExtractedValues.MetricAttributes()...))
 	m.requestDurationHistogram.Inst().Record(c.Request().Context(), v.RequestDuration.Seconds(), o)
 }
@@ -428,7 +428,7 @@ func TestNewMiddlewareWithConfig_Metric(t *testing.T) {
 
 	e := echo.New()
 	e.Use(NewMiddlewareWithConfig(config))
-	e.GET("/user/:id", func(c *echo.Context) error {
+	e.GET("/user/:id", func(c echo.Context) error {
 		id := c.Param("id")
 		assert.Equal(t, "123", id)
 		return c.String(http.StatusOK, id)
@@ -478,21 +478,21 @@ func TestSpanStatusOnHTTP500(t *testing.T) {
 	}{
 		{
 			name: "handler writes 500 status code directly",
-			handler: func(c *echo.Context) error {
+			handler: func(c echo.Context) error {
 				return c.String(http.StatusInternalServerError, "internal server error")
 			},
 			expectErrorType: "500",
 		},
 		{
 			name: "handler returns echo HTTP error with 500",
-			handler: func(c *echo.Context) error {
+			handler: func(c echo.Context) error {
 				return echo.NewHTTPError(http.StatusInternalServerError, "internal server error")
 			},
 			expectErrorType: "500",
 		},
 		{
 			name: "handler returns plain error",
-			handler: func(c *echo.Context) error {
+			handler: func(c echo.Context) error {
 				return errors.New("something failed")
 			},
 			expectErrorType: "*errors.errorString",
@@ -525,15 +525,6 @@ func TestSpanStatusOnHTTP500(t *testing.T) {
 	}
 }
 
-// statusCoderError implements echo.HTTPStatusCoder so echo.ResolveResponseStatus can resolve its status code.
-type statusCoderError struct {
-	code int
-	msg  string
-}
-
-func (e *statusCoderError) Error() string   { return e.msg }
-func (e *statusCoderError) StatusCode() int { return e.code }
-
 func TestSpanStatusOnHTTP4xx(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -542,24 +533,17 @@ func TestSpanStatusOnHTTP4xx(t *testing.T) {
 	}{
 		{
 			name: "handler writes 400 status code directly",
-			handler: func(c *echo.Context) error {
+			handler: func(c echo.Context) error {
 				return c.String(http.StatusBadRequest, "bad request")
 			},
 			expectStatus: http.StatusBadRequest,
 		},
 		{
 			name: "handler returns echo HTTP error with 400",
-			handler: func(c *echo.Context) error {
+			handler: func(c echo.Context) error {
 				return echo.NewHTTPError(http.StatusBadRequest, "bad request")
 			},
 			expectStatus: http.StatusBadRequest,
-		},
-		{
-			name: "handler returns HTTPStatusCoder error with 422",
-			handler: func(c *echo.Context) error {
-				return &statusCoderError{code: http.StatusUnprocessableEntity, msg: "validation failed"}
-			},
-			expectStatus: http.StatusUnprocessableEntity,
 		},
 	}
 
@@ -606,7 +590,7 @@ func TestConfig_OnNextError(t *testing.T) {
 		},
 		{
 			name: "custom OnNextError logging only",
-			givenOnNextError: func(_ *echo.Context, err error) {
+			givenOnNextError: func(_ echo.Context, err error) {
 				t.Logf("Inside custom OnNextError: %v", err)
 			},
 			wantHandlerCalled: 1,
@@ -621,7 +605,7 @@ func TestConfig_OnNextError(t *testing.T) {
 			onNextErrorCalled := 0
 			var onNextError OnErrorFunc
 			if tt.givenOnNextError != nil {
-				onNextError = func(c *echo.Context, err error) {
+				onNextError = func(c echo.Context, err error) {
 					onNextErrorCalled++
 					assert.ErrorIs(t, err, assert.AnError)
 					tt.givenOnNextError(c, err)
@@ -631,12 +615,12 @@ func TestConfig_OnNextError(t *testing.T) {
 			router := echo.New()
 			router.Use(NewMiddlewareWithConfig(Config{ServerName: "foobar", OnNextError: onNextError}))
 
-			router.GET("/ping", func(_ *echo.Context) error {
+			router.GET("/ping", func(_ echo.Context) error {
 				return assert.AnError
 			})
 
 			handlerCalled := 0
-			router.HTTPErrorHandler = func(c *echo.Context, err error) {
+			router.HTTPErrorHandler = func(err error, c echo.Context) {
 				handlerCalled++
 				assert.ErrorIs(t, err, assert.AnError, "test error is expected in error handler")
 				assert.NoError(t, c.NoContent(http.StatusTeapot))
@@ -652,15 +636,123 @@ func TestConfig_OnNextError(t *testing.T) {
 	}
 }
 
+func TestResolveResponseStatus(t *testing.T) {
+	var testCases = []struct {
+		name           string
+		givenStatus    int
+		givenCommitted bool
+		whenError      error
+		expect         int
+	}{
+		{
+			name:        "no error, status from response",
+			givenStatus: http.StatusCreated,
+			expect:      http.StatusCreated,
+		},
+		{
+			name:        "no error, status not set defaults to 200",
+			givenStatus: 0,
+			expect:      http.StatusOK,
+		},
+		{
+			name:           "committed response status is not changed by error",
+			givenStatus:    http.StatusAccepted,
+			givenCommitted: true,
+			whenError:      errors.New("write failed"),
+			expect:         http.StatusAccepted,
+		},
+		{
+			name:        "HTTPError code",
+			givenStatus: http.StatusOK,
+			whenError:   echo.NewHTTPError(http.StatusServiceUnavailable, "unavailable"),
+			expect:      http.StatusServiceUnavailable,
+		},
+		{
+			name:        "internal HTTPError code, like DefaultHTTPErrorHandler",
+			givenStatus: http.StatusOK,
+			whenError:   echo.NewHTTPError(http.StatusBadRequest, "bad request").SetInternal(echo.NewHTTPError(http.StatusForbidden, "forbidden")),
+			expect:      http.StatusForbidden,
+		},
+		{
+			name:        "other error is 500",
+			givenStatus: http.StatusOK,
+			whenError:   errors.New("something failed"),
+			expect:      http.StatusInternalServerError,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := echo.NewResponse(httptest.NewRecorder(), echo.New())
+			resp.Status = tc.givenStatus
+			resp.Committed = tc.givenCommitted
+
+			assert.Equal(t, tc.expect, ResolveResponseStatus(resp, tc.whenError))
+		})
+	}
+}
+
+func TestHTTPRouteFromContextPath(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+
+	e := echo.New()
+	e.Use(NewMiddlewareWithConfig(Config{ServerName: "foobar", TracerProvider: tp}))
+	e.GET("/users/:id", func(c echo.Context) error {
+		return c.String(http.StatusOK, c.Param("id"))
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/users/123", http.NoBody)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, r)
+
+	spans := exporter.GetSpans()
+	assert.Len(t, spans, 1)
+	assert.Equal(t, "GET /users/:id", spans[0].Name)
+	assert.Contains(t, spans[0].Attributes, attribute.String("http.route", "/users/:id"))
+}
+
+func TestCustomHTTPErrorHandlerWithOnNextError(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+
+	e := echo.New()
+	e.HTTPErrorHandler = func(err error, c echo.Context) {
+		if c.Response().Committed {
+			return
+		}
+		_ = c.NoContent(http.StatusTeapot) // custom mapping, not known to ResolveResponseStatus
+	}
+	e.Use(NewMiddlewareWithConfig(Config{
+		ServerName:     "foobar",
+		TracerProvider: tp,
+		OnNextError:    func(c echo.Context, err error) { c.Error(err) },
+	}))
+	e.GET("/teapot", func(c echo.Context) error {
+		return errors.New("i am a teapot")
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/teapot", http.NoBody)
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, r)
+
+	assert.Equal(t, http.StatusTeapot, w.Result().StatusCode)
+	spans := exporter.GetSpans()
+	assert.Len(t, spans, 1)
+	assert.Contains(t, spans[0].Attributes, attribute.Int("http.response.status_code", http.StatusTeapot))
+	assert.Equal(t, codes.Unset, spans[0].Status.Code)
+}
+
 func TestHTTPRouteWithPreMiddleware(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
 	e := echo.New()
 	e.Pre(NewMiddlewareWithConfig(Config{ServerName: "foobar", TracerProvider: tp, MeterProvider: mp}))
-	e.GET("/users/:id", func(c *echo.Context) error {
+	e.GET("/users/:id", func(c echo.Context) error {
 		return c.String(http.StatusOK, c.Param("id"))
 	})
 
@@ -680,32 +772,60 @@ func TestHTTPRouteWithPreMiddleware(t *testing.T) {
 	assert.Equal(t, "/users/:id", route.AsString())
 }
 
-func TestCustomHTTPErrorHandlerWithOnNextError(t *testing.T) {
-	exporter := tracetest.NewInMemoryExporter()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
-
-	e := echo.New()
-	e.HTTPErrorHandler = func(c *echo.Context, err error) {
-		if resp, uErr := echo.UnwrapResponse(c.Response()); uErr == nil && resp.Committed {
-			return
-		}
-		_ = c.NoContent(http.StatusTeapot) // custom mapping, not known to echo.ResolveResponseStatus
+func TestErrorTypeForHTTPErrorOutside5xx(t *testing.T) {
+	var testCases = []struct {
+		name            string
+		handler         echo.HandlerFunc
+		expectStatus    int
+		expectErrorType string
+	}{
+		{
+			name: "HTTPError after committed 200 is an error with the error type",
+			handler: func(c echo.Context) error {
+				_ = c.String(http.StatusOK, "partial")
+				return echo.NewHTTPError(http.StatusBadGateway, "upstream failed")
+			},
+			expectStatus:    http.StatusOK,
+			expectErrorType: "*echo.HTTPError",
+		},
+		{
+			name: "HTTPError with 3xx code is an error with the error type",
+			handler: func(c echo.Context) error {
+				return echo.NewHTTPError(http.StatusNotModified, "not modified")
+			},
+			expectStatus:    http.StatusNotModified,
+			expectErrorType: "*echo.HTTPError",
+		},
+		{
+			name: "HTTPError with 5xx code reports the status code",
+			handler: func(c echo.Context) error {
+				return echo.NewHTTPError(http.StatusBadGateway, "upstream failed")
+			},
+			expectStatus:    http.StatusBadGateway,
+			expectErrorType: "502",
+		},
 	}
-	e.Use(NewMiddlewareWithConfig(Config{
-		ServerName:     "foobar",
-		TracerProvider: tp,
-		OnNextError:    func(c *echo.Context, err error) { c.Echo().HTTPErrorHandler(c, err) },
-	}))
-	e.GET("/teapot", func(c *echo.Context) error {
-		return errors.New("i am a teapot")
-	})
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			exporter := tracetest.NewInMemoryExporter()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 
-	w := httptest.NewRecorder()
-	e.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/teapot", http.NoBody))
+			e := echo.New()
+			e.Use(NewMiddlewareWithConfig(Config{ServerName: "foobar", TracerProvider: tp}))
+			e.GET("/x", tc.handler)
+			e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", http.NoBody))
 
-	assert.Equal(t, http.StatusTeapot, w.Result().StatusCode)
-	spans := exporter.GetSpans()
-	assert.Len(t, spans, 1)
-	assert.Contains(t, spans[0].Attributes, attribute.Int("http.response.status_code", http.StatusTeapot))
-	assert.Equal(t, codes.Unset, spans[0].Status.Code)
+			spans := exporter.GetSpans()
+			assert.Len(t, spans, 1)
+			assert.Equal(t, codes.Error, spans[0].Status.Code)
+			assert.Contains(t, spans[0].Attributes, attribute.Int("http.response.status_code", tc.expectStatus))
+			assert.Contains(t, spans[0].Attributes, attribute.String("error.type", tc.expectErrorType))
+		})
+	}
+}
+
+func TestResolveResponseStatusNilResponse(t *testing.T) {
+	assert.Equal(t, http.StatusOK, ResolveResponseStatus(nil, nil))
+	assert.Equal(t, http.StatusInternalServerError, ResolveResponseStatus(nil, errors.New("x")))
+	assert.Equal(t, http.StatusBadRequest, ResolveResponseStatus(nil, echo.NewHTTPError(http.StatusBadRequest)))
 }

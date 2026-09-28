@@ -1,4 +1,4 @@
-PKG := "github.com/labstack/echo-otel/v5"
+PKG := "github.com/labstack/echo-otel/v4"
 PKG_LIST := $(shell go list ${PKG}/...)
 
 .DEFAULT_GOAL := check

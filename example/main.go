@@ -8,11 +8,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 
-	echootel "github.com/labstack/echo-otel/v5"
-	"github.com/labstack/echo/v5"
+	echootel "github.com/labstack/echo-otel/v4"
+	"github.com/labstack/echo/v4"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -45,7 +46,7 @@ func main() {
 		TracerProvider: tp,
 	}))
 
-	e.GET("/users/:id", func(c *echo.Context) error {
+	e.GET("/users/:id", func(c echo.Context) error {
 		u := user{
 			ID:   c.Param("id"),
 			Name: "",
@@ -54,7 +55,7 @@ func main() {
 		return c.JSON(http.StatusOK, u)
 	})
 	if err := e.Start(":8080"); err != nil {
-		e.Logger.Error("Failed to start echo server", "error", err)
+		e.Logger.Error("Failed to start echo server: ", err)
 	}
 }
 
@@ -72,10 +73,10 @@ func initTracer() (*sdktrace.TracerProvider, error) {
 	return tp, nil
 }
 
-func traceGetUser(c *echo.Context, id string) (string, error) {
-	tp, err := echo.ContextGet[trace.Tracer](c, echootel.TracerKey)
-	if err != nil {
-		return "", err
+func traceGetUser(c echo.Context, id string) (string, error) {
+	tp, ok := c.Get(echootel.TracerKey).(trace.Tracer)
+	if !ok {
+		return "", errors.New("tracer not found in context")
 	}
 
 	_, span := tp.Start(c.Request().Context(), "getUser", trace.WithAttributes(attribute.String("id", id)))

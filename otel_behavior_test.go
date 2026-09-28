@@ -13,8 +13,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/labstack/echo/v5"
-	"github.com/labstack/echo/v5/middleware"
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -65,7 +65,7 @@ func TestPanicIsRecordedAndRepanicked(t *testing.T) {
 	e := echo.New()
 	e.Use(middleware.Recover()) // usual order: Recover wraps the otel middleware
 	e.Use(NewMiddlewareWithConfig(Config{ServerName: "foobar", TracerProvider: tp, MeterProvider: mp}))
-	e.GET("/panic", func(c *echo.Context) error {
+	e.GET("/panic", func(c echo.Context) error {
 		panic("boom")
 	})
 
@@ -95,7 +95,7 @@ func TestUnknownRequestBodySizeIsNotRecorded(t *testing.T) {
 
 	e := echo.New()
 	e.Use(NewMiddlewareWithConfig(Config{ServerName: "foobar", TracerProvider: tp, MeterProvider: mp}))
-	e.POST("/upload", func(c *echo.Context) error {
+	e.POST("/upload", func(c echo.Context) error {
 		_, _ = io.Copy(io.Discard, c.Request().Body)
 		return c.NoContent(http.StatusNoContent)
 	})
@@ -124,7 +124,7 @@ func TestMetricsHaveNoClientChosenAttributes(t *testing.T) {
 
 	e := echo.New()
 	e.Use(NewMiddlewareWithConfig(Config{ServerName: "api.example.com", TracerProvider: tp, MeterProvider: mp}))
-	e.Any("/x", func(c *echo.Context) error {
+	e.Any("/x", func(c echo.Context) error {
 		return c.NoContent(http.StatusOK)
 	})
 
@@ -174,7 +174,7 @@ func TestHTTPRouteIsEchoRouteBehindServeMux(t *testing.T) {
 			} else {
 				e.Use(mw)
 			}
-			e.GET("/api/users/:id", func(c *echo.Context) error {
+			e.GET("/api/users/:id", func(c echo.Context) error {
 				return c.NoContent(http.StatusOK)
 			})
 
@@ -200,8 +200,8 @@ func TestHTTPRouteIsEchoRouteBehindServeMux(t *testing.T) {
 func TestOnExtractionError(t *testing.T) {
 	var got error
 	e := echo.New()
-	e.Use(NewMiddlewareWithConfig(Config{OnExtractionError: func(c *echo.Context, err error) { got = err }}))
-	e.GET("/x", func(c *echo.Context) error { return c.NoContent(http.StatusOK) })
+	e.Use(NewMiddlewareWithConfig(Config{OnExtractionError: func(c echo.Context, err error) { got = err }}))
+	e.GET("/x", func(c echo.Context) error { return c.NoContent(http.StatusOK) })
 
 	r := httptest.NewRequest(http.MethodGet, "/x", http.NoBody)
 	r.Host = "bad:host:name:1"
@@ -219,9 +219,9 @@ func TestSpanStartOptionsAndTracerKey(t *testing.T) {
 		TracerProvider:   tp,
 		SpanStartOptions: []trace.SpanStartOption{trace.WithAttributes(attribute.String("custom", "yes"))},
 	}))
-	e.GET("/x", func(c *echo.Context) error {
-		tracer, err := echo.ContextGet[trace.Tracer](c, TracerKey)
-		if assert.NoError(t, err) {
+	e.GET("/x", func(c echo.Context) error {
+		tracer, ok := c.Get(TracerKey).(trace.Tracer)
+		if assert.True(t, ok) {
 			_, child := tracer.Start(c.Request().Context(), "child")
 			child.End()
 		}
@@ -244,14 +244,14 @@ func TestSpanEndAttributesCallbackMustAppend(t *testing.T) {
 	}{
 		{
 			name: "append to attr keeps error.type",
-			callback: func(c *echo.Context, v *Values, attr []attribute.KeyValue) []attribute.KeyValue {
+			callback: func(c echo.Context, v *Values, attr []attribute.KeyValue) []attribute.KeyValue {
 				return append(attr, attribute.String("extra", "1"))
 			},
 			expectErrType: true,
 		},
 		{
 			name: "new slice drops error.type",
-			callback: func(c *echo.Context, v *Values, attr []attribute.KeyValue) []attribute.KeyValue {
+			callback: func(c echo.Context, v *Values, attr []attribute.KeyValue) []attribute.KeyValue {
 				return []attribute.KeyValue{attribute.String("extra", "1")}
 			},
 			expectErrType: false,
@@ -262,7 +262,7 @@ func TestSpanEndAttributesCallbackMustAppend(t *testing.T) {
 			exporter, tp, _, _ := newTestProviders()
 			e := echo.New()
 			e.Use(NewMiddlewareWithConfig(Config{ServerName: "foobar", TracerProvider: tp, SpanEndAttributes: tc.callback}))
-			e.GET("/x", func(c *echo.Context) error { return c.NoContent(http.StatusServiceUnavailable) })
+			e.GET("/x", func(c echo.Context) error { return c.NoContent(http.StatusServiceUnavailable) })
 			e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", http.NoBody))
 
 			spans := exporter.GetSpans()
@@ -283,7 +283,7 @@ func TestMultipartFormTempFilesAreRemoved(t *testing.T) {
 	var tmpFile string
 	e := echo.New()
 	e.Use(NewMiddleware("foobar"))
-	e.POST("/upload", func(c *echo.Context) error {
+	e.POST("/upload", func(c echo.Context) error {
 		if err := c.Request().ParseMultipartForm(1); err != nil { // tiny memory limit forces a temp file
 			return err
 		}
@@ -329,21 +329,21 @@ func TestPanicPaths(t *testing.T) {
 		{
 			name:            "panic after 4xx response was sent is still an error",
 			recover:         true,
-			handler:         func(c *echo.Context) error { _ = c.NoContent(http.StatusNotFound); panic("late") },
+			handler:         func(c echo.Context) error { _ = c.NoContent(http.StatusNotFound); panic("late") },
 			expectStatus:    http.StatusNotFound,
 			expectErrorType: "panic",
 		},
 		{
 			name:            "panic with a status error records its status",
 			recover:         true,
-			handler:         func(c *echo.Context) error { panic(echo.ErrUnauthorized) },
+			handler:         func(c echo.Context) error { panic(echo.ErrUnauthorized) },
 			expectStatus:    http.StatusUnauthorized,
 			expectErrorType: "panic",
 		},
 		{
 			name:            "http.ErrAbortHandler without response records no status",
 			recover:         false,
-			handler:         func(c *echo.Context) error { panic(http.ErrAbortHandler) },
+			handler:         func(c echo.Context) error { panic(http.ErrAbortHandler) },
 			expectRepanic:   http.ErrAbortHandler,
 			expectStatus:    0,
 			expectErrorType: "panic",
@@ -352,9 +352,9 @@ func TestPanicPaths(t *testing.T) {
 			name:    "panic in OnNextError is recorded",
 			recover: true,
 			config: func(cfg *Config) {
-				cfg.OnNextError = func(c *echo.Context, err error) { panic("hook") }
+				cfg.OnNextError = func(c echo.Context, err error) { panic("hook") }
 			},
-			handler:         func(c *echo.Context) error { return errors.New("x") },
+			handler:         func(c echo.Context) error { return errors.New("x") },
 			expectStatus:    http.StatusInternalServerError,
 			expectErrorType: "panic",
 		},
@@ -362,11 +362,11 @@ func TestPanicPaths(t *testing.T) {
 			name:    "panic in a recording callback keeps the original panic value",
 			recover: false,
 			config: func(cfg *Config) {
-				cfg.SpanEndAttributes = func(c *echo.Context, v *Values, attr []attribute.KeyValue) []attribute.KeyValue {
+				cfg.SpanEndAttributes = func(c echo.Context, v *Values, attr []attribute.KeyValue) []attribute.KeyValue {
 					panic("callback")
 				}
 			},
-			handler:       func(c *echo.Context) error { panic("original") },
+			handler:       func(c echo.Context) error { panic("original") },
 			expectRepanic: "original",
 			expectStatus:  -1, // not checked, recording was interrupted
 		},
@@ -417,19 +417,19 @@ func TestPanicPaths(t *testing.T) {
 	}
 }
 
-func TestRecoverAddedAfterMiddlewareReportsPanic(t *testing.T) {
+func TestRecoverAddedAfterMiddleware(t *testing.T) {
 	exporter, tp, _, mp := newTestProviders()
 	e := echo.New()
 	e.Use(NewMiddlewareWithConfig(Config{ServerName: "foobar", TracerProvider: tp, MeterProvider: mp}))
-	e.Use(middleware.Recover()) // Recover inside turns the panic into *middleware.PanicStackError
-	e.GET("/x", func(c *echo.Context) error { panic("boom") })
+	e.Use(middleware.Recover()) // Recover inside calls the error handler, which sends 500, and returns nil
+	e.GET("/x", func(c echo.Context) error { panic("boom") })
 	e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", http.NoBody))
 
 	spans := exporter.GetSpans()
 	if assert.Len(t, spans, 1) {
 		assert.Equal(t, codes.Error, spans[0].Status.Code)
-		assert.Equal(t, "panic: boom", spans[0].Status.Description)
-		assert.Contains(t, spans[0].Attributes, attribute.String("error.type", "panic"))
+		assert.Contains(t, spans[0].Attributes, attribute.Int("http.response.status_code", http.StatusInternalServerError))
+		assert.Contains(t, spans[0].Attributes, attribute.String("error.type", "500"))
 	}
 }
 
@@ -456,7 +456,7 @@ func BenchmarkMiddleware(b *testing.B) {
 			}
 			e := echo.New()
 			e.Use(NewMiddlewareWithConfig(cfg))
-			e.GET("/users/:id", func(c *echo.Context) error { return c.String(http.StatusOK, "ok") })
+			e.GET("/users/:id", func(c echo.Context) error { return c.String(http.StatusOK, "ok") })
 			r := httptest.NewRequest(http.MethodGet, "/users/123?x=1", http.NoBody)
 			r.Header.Set("User-Agent", "bench")
 

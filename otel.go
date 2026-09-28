@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/labstack/echo/v5"
-	"github.com/labstack/echo/v5/middleware"
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -24,7 +24,7 @@ const (
 	// TracerKey is the key used to store the tracer in the echo context.
 	TracerKey = "labstack-echo-otelecho-tracer"
 	// ScopeName is the instrumentation scope name.
-	ScopeName = "github.com/labstack/echo-otel/v5"
+	ScopeName = "github.com/labstack/echo-otel/v4"
 )
 
 // Config is used to configure the middleware.
@@ -87,19 +87,19 @@ type Config struct {
 
 // AttributesFunc is used to extract additional attributes from the echo.Context
 // and return them as a slice of attribute.KeyValue.
-type AttributesFunc func(c *echo.Context, v *Values, attr []attribute.KeyValue) []attribute.KeyValue
+type AttributesFunc func(c echo.Context, v *Values, attr []attribute.KeyValue) []attribute.KeyValue
 
 // MetricAttributesFunc is used to compose attributes for Metrics.Record.
-type MetricAttributesFunc func(c *echo.Context, v *Values) []attribute.KeyValue
+type MetricAttributesFunc func(c echo.Context, v *Values) []attribute.KeyValue
 
 // MetricsRecorder is used to record metrics. This interface is used to allow custom metrics recording with access to
 // the Echo context, so additional attributes can be extracted from it.
 type MetricsRecorder interface {
-	Record(c *echo.Context, v RecordValues)
+	Record(c echo.Context, v RecordValues)
 }
 
 // OnErrorFunc is used to specify how errors are handled in the middleware.
-type OnErrorFunc func(c *echo.Context, err error)
+type OnErrorFunc func(c echo.Context, err error)
 
 // NewMiddleware creates new echo opentelemetry middleware with the given server name.
 func NewMiddleware(serverName string) echo.MiddlewareFunc {
@@ -164,7 +164,7 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 	}
 
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c *echo.Context) error {
+		return func(c echo.Context) error {
 			if config.Skipper(c) {
 				return next(c)
 			}
@@ -222,8 +222,6 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 				}
 			}()
 
-			// end records the span status, span end attributes and metrics. statusSent is false when no response
-			// status was sent to the client (the handler aborted the request).
 			end := func(err error, statusSent bool) {
 				if ev.HTTPRoute == "" {
 					// middleware added with Echo.Pre runs before routing, so the route is known only after the next handler
@@ -234,17 +232,30 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 					}
 				}
 
-				resp, status := echo.ResolveResponseStatus(c.Response(), err)
+				resp := c.Response()
+				statusErr := err
+				var pErr *panicError
+				if errors.As(err, &pErr) {
+					if he, ok := pErr.value.(*echo.HTTPError); ok {
+						// the error handler sends the status of an *echo.HTTPError panic value (Recover calls c.Error)
+						statusErr = he
+					}
+				}
+				status := ResolveResponseStatus(resp, statusErr)
 				if !statusSent {
 					status = 0 // http.response.status_code is set only if a status was sent
 				}
 				ev.HTTPResponseStatusCode = status
 
-				var pErr *panicError
-				if errors.As(err, &pErr) || status == 0 {
+				if pErr != nil || status == 0 {
 					// a panic is an error regardless of the status code that was already sent (even 4xx)
 					span.SetStatus(codes.Error, err.Error())
 					ev.ErrorType = ErrorType(0, err)
+				} else if _, ok := err.(*echo.HTTPError); ok && status >= 500 && status < 600 {
+					// for a 5xx response caused by HTTPError the status code is the error type, like with Echo v5 where
+					// HTTPError implements `StatusCode() int` (Echo v4 HTTPError does not)
+					span.SetStatus(SpanStatus(status, err))
+					ev.ErrorType = ErrorType(status, nil)
 				} else {
 					span.SetStatus(SpanStatus(status, err))
 					ev.ErrorType = ErrorType(status, err)
@@ -278,10 +289,7 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 				// The next handler (or OnNextError) panicked or called runtime.Goexit. Record the request as failed, then
 				// re-panic so that a Recover middleware added before this one (or http.Server) still handles the panic.
 				r := recover()
-				committed := false
-				if resp, uErr := echo.UnwrapResponse(c.Response()); uErr == nil {
-					committed = resp.Committed
-				}
+				committed := c.Response().Committed
 				if r == nil { // runtime.Goexit
 					end(&panicError{value: "runtime.Goexit"}, committed)
 					return
@@ -296,18 +304,38 @@ func (config Config) ToMiddleware() (echo.MiddlewareFunc, error) {
 				config.OnNextError(c, err)
 			}
 			completed = true
-
-			recordErr := err
-			var panicStackErr *middleware.PanicStackError
-			if errors.As(err, &panicStackErr) {
-				// Recover middleware added after this one turned a panic into an error
-				recordErr = &panicError{value: panicStackErr.Err}
-			}
-			end(recordErr, true)
+			end(err, true)
 
 			return err
 		}
 	}, nil
+}
+
+// ResolveResponseStatus returns the HTTP status code that has been (or will be) sent for the given response and the
+// error returned from the next middleware/handler.
+//
+// Once the response is committed, the status sent to the client is used. Otherwise, the error is handled later by the
+// Echo error handler, and the status is resolved the same way as Echo's DefaultHTTPErrorHandler does: code of the
+// *echo.HTTPError (or its internal *echo.HTTPError) or 500 for any other error. With a custom error handler that
+// resolves the status differently, set Config.OnNextError to `func(c echo.Context, err error) { c.Error(err) }`, so the
+// handler commits the response before the status is resolved.
+func ResolveResponseStatus(resp *echo.Response, err error) int {
+	if resp != nil && (resp.Committed || err == nil) {
+		if resp.Status == 0 {
+			return http.StatusOK
+		}
+		return resp.Status
+	}
+	if err == nil {
+		return http.StatusOK
+	}
+	if he, ok := err.(*echo.HTTPError); ok {
+		if herr, ok := he.Internal.(*echo.HTTPError); ok {
+			he = herr
+		}
+		return he.Code
+	}
+	return http.StatusInternalServerError
 }
 
 // panicError is the error recorded for a request whose handler panicked. Its error type is "panic".
@@ -318,8 +346,7 @@ type panicError struct {
 func (e *panicError) Error() string     { return fmt.Sprintf("panic: %v", e.value) }
 func (e *panicError) ErrorType() string { return "panic" }
 
-// Unwrap returns the panic value if it is an error, so that a panic value carrying a status code (for example
-// echo.ErrUnauthorized) resolves to the status code the error handler sends for it.
+// Unwrap returns the panic value if it is an error.
 func (e *panicError) Unwrap() error {
 	err, _ := e.value.(error)
 	return err
@@ -330,6 +357,6 @@ type echoMetricsRecorder struct {
 	*Metrics
 }
 
-func (e *echoMetricsRecorder) Record(c *echo.Context, v RecordValues) {
+func (e *echoMetricsRecorder) Record(c echo.Context, v RecordValues) {
 	e.Metrics.Record(c.Request().Context(), v)
 }
