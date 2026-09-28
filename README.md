@@ -3,6 +3,10 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/labstack/echo-opentelemetry?style=flat-square)](https://goreportcard.com/report/github.com/labstack/echo-opentelemetry)
 [![License](http://img.shields.io/badge/license-mit-blue.svg?style=flat-square)](https://raw.githubusercontent.com/labstack/echo-opentelemetry/main/LICENSE)
 
+> **Deprecated.** This project was renamed to [`github.com/labstack/echo-otel`](https://github.com/labstack/echo-otel).
+> Use `github.com/labstack/echo-otel/v5` for Echo v5 or `github.com/labstack/echo-otel/v4` for Echo v4.
+> `github.com/labstack/echo-opentelemetry` receives no more changes.
+
 # Echo OpenTelemetry (OTel) middleware
 
 [OpenTelemetry](https://opentelemetry.io/) middleware for [Echo](https://github.com/labstack/echo) framework.

@@ -1,3 +1,4 @@
+// Deprecated: use github.com/labstack/echo-otel/v5 (Echo v5) or github.com/labstack/echo-otel/v4 (Echo v4) instead.
 module github.com/labstack/echo-opentelemetry
 
 go 1.25.0
